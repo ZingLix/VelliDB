@@ -1,5 +1,6 @@
-mod key;
 mod status;
 mod store;
-pub use key::InternalKey;
-pub use key::Key;
+mod types;
+mod wal;
+pub use types::InternalKey;
+pub use types::Key;

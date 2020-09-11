@@ -3,6 +3,7 @@ use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{self, Ordering};
+
 pub struct LocalStorageStatus {
     sequence_num: atomic::AtomicU64,
     current_file: File,
@@ -18,6 +19,7 @@ enum StatusChange {
 #[derive(Serialize, Deserialize, Debug)]
 struct CurrentFileContent {
     sequence_num: u64,
+    log_num: u64,
     manifest_count: u64,
 }
 
@@ -25,6 +27,7 @@ impl CurrentFileContent {
     fn new() -> CurrentFileContent {
         CurrentFileContent {
             sequence_num: 1,
+            log_num: 0,
             manifest_count: 1,
         }
     }
@@ -126,5 +129,9 @@ impl LocalStorageStatus {
 
     fn next_seq_num(&self) -> u64 {
         self.sequence_num.fetch_add(1, Ordering::Relaxed)
+    }
+
+    pub fn wal_log_num(&self) -> u64 {
+        self.current_content.log_num
     }
 }
