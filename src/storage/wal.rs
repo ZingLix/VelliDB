@@ -1,4 +1,4 @@
-use super::types::{InternalKey, KvPair, ValueType};
+use super::types::{InternalKey, Key, KvPair, Value, ValueType};
 use crate::{Result, VelliErrorType};
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -20,7 +20,12 @@ impl WalManager {
         }
         let mut file_path = path.clone();
         file_path.push(Self::log_filename(log_num));
-        let log_file = File::open(file_path).unwrap();
+        let log_file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(file_path)
+            .unwrap();
         WalManager {
             path,
             log_num,
@@ -36,7 +41,38 @@ impl WalManager {
         self.log_num += 1;
         let mut path = self.path.clone();
         path.push(Self::log_filename(self.log_num));
-        self.log_file = File::open(path)?;
+        self.log_file = File::create(path)?;
+        Ok(())
+    }
+
+    pub fn write(&mut self, key: &InternalKey, value: &Option<Value>) -> Result<()> {
+        let key_len = key.user_key().len() as u64;
+        let mut target_str = Vec::<u8>::new();
+        // key length
+        target_str.append(&mut key_len.to_be_bytes().to_vec());
+        // key
+        target_str.append(&mut key.user_key().clone());
+        // sequence number
+        target_str.append(&mut key.sequence_num().to_be_bytes().to_vec());
+        // value type
+        match key.value_type() {
+            ValueType::Deletion => {
+                target_str.push(0u8);
+            }
+            ValueType::Value => {
+                target_str.push(1u8);
+                if let Some(v) = value {
+                    // value length
+                    let value_len = v.len() as u64;
+                    target_str.append(&mut value_len.to_be_bytes().to_vec());
+                    // value
+                    target_str.append(&mut v.clone());
+                } else {
+                    Err(VelliErrorType::InvalidArguments)?;
+                }
+            }
+        };
+        self.log_file.write_all(&target_str)?;
         Ok(())
     }
 
@@ -64,18 +100,23 @@ impl Iterator for WalIterator {
         let mut buf: [u8; 8] = [0u8; 8];
         let size = self.log_file.read(&mut buf).unwrap();
         if size == 0 {
+            // End of file
             return None;
         }
         if size != buf.len() {
             error!("Decode WAL log failed.");
             std::process::exit(1);
         }
+        // user key length
         let key_len = u64::from_be_bytes(buf.clone());
         let mut user_key = vec![0; key_len as usize];
+        // read user key
         self.log_file.read_exact(&mut user_key);
+        // read sequence number
         self.log_file.read_exact(&mut buf);
         let sequence_num = u64::from_be_bytes(buf.clone());
         let mut value_type_buf: [u8; 1] = [0; 1];
+        // read value type
         self.log_file.read(&mut value_type_buf);
         let value_type = match value_type_buf[0] {
             0 => ValueType::Deletion,
@@ -89,9 +130,11 @@ impl Iterator for WalIterator {
         if value_type == ValueType::Deletion {
             return Some((key, None));
         }
+        // read value length
         self.log_file.read_exact(&mut buf);
         let value_len = u64::from_be_bytes(buf);
         let mut value = vec![0; value_len as usize];
+        // read value
         self.log_file.read_exact(&mut value);
         Some((key, Some(value)))
     }

@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{self, Ordering};
@@ -14,6 +14,7 @@ pub struct LocalStorageStatus {
 #[derive(Serialize, Deserialize, Debug)]
 enum StatusChange {
     IncreaseSeqNum,
+    IncreaseLogNum,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -52,15 +53,19 @@ impl LocalStorageStatus {
     fn recover_status(status: &mut LocalStorageStatus) {
         let reader = BufReader::new(status.manifest_file.try_clone().unwrap());
         let mut stream = serde_json::Deserializer::from_reader(reader).into_iter::<StatusChange>();
-        let mut seq_num = status.sequence_num.get_mut().clone();
+        let mut seq_num = status.sequence_num.load(Ordering::Relaxed);
         while let Some(change) = stream.next() {
             match change {
                 Ok(ch) => match ch {
                     StatusChange::IncreaseSeqNum => {
                         seq_num += 1;
                     }
+                    StatusChange::IncreaseLogNum => {
+                        status.current_content.log_num += 1;
+                    }
                 },
                 Err(e) => {
+                    print!("{}", e);
                     error!("Deserialize MANIFEST file failed.");
                     std::process::exit(1);
                 }
@@ -88,7 +93,12 @@ impl LocalStorageStatus {
             current_file
                 .write_all(serde_json::to_string(&status).unwrap().as_bytes())
                 .unwrap();
-            manifest_file = match File::create(manifest_filename(status.manifest_count)) {
+            manifest_file = match OpenOptions::new()
+                .create(true)
+                .read(true)
+                .write(true)
+                .open(path.join(manifest_filename(status.manifest_count)))
+            {
                 Ok(f) => f,
                 Err(e) => {
                     error!(
@@ -107,7 +117,7 @@ impl LocalStorageStatus {
                     std::process::exit(1);
                 }
             };
-            let mut content = String::from("");
+            let mut content = String::new();
             current_file.read_to_string(&mut content).unwrap();
             status = match serde_json::from_str(&content) {
                 Ok(s) => s,
@@ -116,7 +126,7 @@ impl LocalStorageStatus {
                     std::process::exit(1);
                 }
             };
-            manifest_file = match File::open(manifest_filename(status.manifest_count)) {
+            manifest_file = match File::open(path.join(manifest_filename(status.manifest_count))) {
                 Ok(f) => f,
                 Err(e) => {
                     error!("Open MANIFEST file failed.");
@@ -127,11 +137,25 @@ impl LocalStorageStatus {
         (current_file, manifest_file, status)
     }
 
-    fn next_seq_num(&self) -> u64 {
-        self.sequence_num.fetch_add(1, Ordering::Relaxed)
+    pub fn next_seq_num(&mut self) -> u64 {
+        let seq_num = self.sequence_num.fetch_add(1, Ordering::Relaxed);
+        let record = serde_json::to_string(&StatusChange::IncreaseSeqNum).unwrap();
+        self.manifest_file.write(record.as_bytes());
+        seq_num
+    }
+
+    pub fn cur_seq_num(&self) -> u64 {
+        self.sequence_num.load(Ordering::Relaxed)
     }
 
     pub fn wal_log_num(&self) -> u64 {
+        self.current_content.log_num
+    }
+
+    pub fn update_log_num(&mut self) -> u64 {
+        self.current_content.log_num += 1;
+        let record = serde_json::to_string(&StatusChange::IncreaseLogNum).unwrap();
+        self.manifest_file.write(record.as_bytes());
         self.current_content.log_num
     }
 }

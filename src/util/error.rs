@@ -18,6 +18,8 @@ pub enum VelliErrorType {
     KeyNotFound,
     #[fail(display = "LockFailed")]
     LockFailed,
+    #[fail(display = "InvalidArguments")]
+    InvalidArguments,
     #[fail(display = "Other")]
     Other,
 }
