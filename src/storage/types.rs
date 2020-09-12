@@ -27,6 +27,7 @@ impl InternalKey {
         }
     }
 
+    #[allow(dead_code)]
     fn size(&self) -> usize {
         self.user_key.len() * size_of::<u8>() + size_of::<u64>() + size_of::<ValueType>()
     }

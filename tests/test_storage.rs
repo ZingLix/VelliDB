@@ -47,7 +47,7 @@ fn delete_value_and_restore() -> Result<()> {
 }
 
 #[test]
-fn overwrite_value_and_restore() -> Result<()> {
+fn overwrite_value_and_restore_repeatedly() -> Result<()> {
     let temp_dir = TempDir::new().expect("unable to create temporary dir.");
     let mut store = LocalStorage::new(temp_dir.path().to_path_buf())
         .expect("unable to create LocalStorage object.");
@@ -66,5 +66,16 @@ fn overwrite_value_and_restore() -> Result<()> {
         .expect("unable to create LocalStorage object.");
     assert_eq!(store.get(b"key1".to_vec())?, Some(b"value2".to_vec()));
 
+    drop(store);
+
+    let store = LocalStorage::new(temp_dir.path().to_path_buf())
+        .expect("unable to create LocalStorage object.");
+    assert_eq!(store.get(b"key1".to_vec())?, Some(b"value2".to_vec()));
+
+    drop(store);
+
+    let store = LocalStorage::new(temp_dir.path().to_path_buf())
+        .expect("unable to create LocalStorage object.");
+    assert_eq!(store.get(b"key1".to_vec())?, Some(b"value2".to_vec()));
     Ok(())
 }

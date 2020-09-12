@@ -1,15 +1,15 @@
 use super::status::LocalStorageStatus;
 use super::types::{InternalKey, Key, Value, ValueType};
-use super::wal::{WalIterator, WalManager};
+use super::wal::WalManager;
 use crate::{Result, VelliErrorType};
 extern crate crossbeam_skiplist;
 extern crate fs2;
 use crossbeam_skiplist::SkipMap;
 use fs2::FileExt;
 use std::fs::{self, File};
-use std::ops::Bound::{Excluded, Included, Unbounded};
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::ops::Bound::Included;
+use std::path::PathBuf;
+use std::sync::Arc;
 
 type MemTable = Arc<SkipMap<InternalKey, Option<Value>>>;
 
@@ -18,6 +18,7 @@ pub struct LocalStorage {
     status: LocalStorageStatus,
     wal_log: WalManager,
     mmt: MemTable,
+    #[allow(dead_code)]
     imm: MemTable,
 }
 
@@ -39,9 +40,9 @@ impl LocalStorage {
                 return Err(VelliErrorType::LockFailed)?;
             }
         }
-        let mut status = LocalStorageStatus::new(&path);
+        let status = LocalStorageStatus::new(&path);
         let mut wal = WalManager::new(&path, status.wal_log_num());
-        let (mmt, imm) = Self::recover_sstable(&mut wal, &mut status)?;
+        let (mmt, imm) = Self::recover_sstable(&mut wal)?;
 
         Ok(LocalStorage {
             lock_file,
@@ -52,18 +53,13 @@ impl LocalStorage {
         })
     }
 
-    fn recover_sstable(
-        wal_manager: &mut WalManager,
-        status: &mut LocalStorageStatus,
-    ) -> Result<(MemTable, MemTable)> {
+    fn recover_sstable(wal_manager: &mut WalManager) -> Result<(MemTable, MemTable)> {
         let mmt = Arc::new(SkipMap::new());
         let imm = Arc::new(SkipMap::new());
         for item in wal_manager.iterator() {
+            // recover memtable
             (*mmt).insert(item.0, item.1);
-            // recover sstable
         }
-        status.update_log_num();
-        wal_manager.next()?;
         Ok((mmt, imm))
     }
 

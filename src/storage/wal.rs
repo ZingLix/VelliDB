@@ -1,8 +1,8 @@
-use super::types::{InternalKey, Key, KvPair, Value, ValueType};
+use super::types::{InternalKey, KvPair, Value, ValueType};
 use crate::{Result, VelliErrorType};
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 pub struct WalManager {
     path: PathBuf,
@@ -37,6 +37,7 @@ impl WalManager {
         format!("WAL_LOG_{}", log_num)
     }
 
+    #[allow(dead_code)]
     pub fn next(&mut self) -> Result<()> {
         self.log_num += 1;
         let mut path = self.path.clone();
@@ -88,7 +89,7 @@ pub struct WalIterator {
 impl WalIterator {
     pub fn new(log_file: &File) -> WalIterator {
         let mut log_file = log_file.try_clone().unwrap();
-        log_file.seek(SeekFrom::Start(0));
+        log_file.seek(SeekFrom::Start(0)).unwrap();
         WalIterator { log_file }
     }
 }
@@ -111,13 +112,13 @@ impl Iterator for WalIterator {
         let key_len = u64::from_be_bytes(buf.clone());
         let mut user_key = vec![0; key_len as usize];
         // read user key
-        self.log_file.read_exact(&mut user_key);
+        self.log_file.read_exact(&mut user_key).unwrap();
         // read sequence number
-        self.log_file.read_exact(&mut buf);
+        self.log_file.read_exact(&mut buf).unwrap();
         let sequence_num = u64::from_be_bytes(buf.clone());
         let mut value_type_buf: [u8; 1] = [0; 1];
         // read value type
-        self.log_file.read(&mut value_type_buf);
+        self.log_file.read(&mut value_type_buf).unwrap();
         let value_type = match value_type_buf[0] {
             0 => ValueType::Deletion,
             1 => ValueType::Value,
@@ -131,11 +132,11 @@ impl Iterator for WalIterator {
             return Some((key, None));
         }
         // read value length
-        self.log_file.read_exact(&mut buf);
+        self.log_file.read_exact(&mut buf).unwrap();
         let value_len = u64::from_be_bytes(buf);
         let mut value = vec![0; value_len as usize];
         // read value
-        self.log_file.read_exact(&mut value);
+        self.log_file.read_exact(&mut value).unwrap();
         Some((key, Some(value)))
     }
 }

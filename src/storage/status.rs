@@ -6,6 +6,7 @@ use std::sync::atomic::{self, Ordering};
 
 pub struct LocalStorageStatus {
     sequence_num: atomic::AtomicU64,
+    #[allow(dead_code)]
     current_file: File,
     manifest_file: File,
     current_content: CurrentFileContent,
@@ -84,7 +85,7 @@ impl LocalStorageStatus {
             info!("CURRENT file does not exist.");
             current_file = match File::create(&current_file_path) {
                 Ok(f) => f,
-                Err(e) => {
+                Err(_) => {
                     error!("Create CURRENT file failed.");
                     std::process::exit(1);
                 }
@@ -100,7 +101,7 @@ impl LocalStorageStatus {
                 .open(path.join(manifest_filename(status.manifest_count)))
             {
                 Ok(f) => f,
-                Err(e) => {
+                Err(_) => {
                     error!(
                         "Create mainfest file {} failed.",
                         manifest_filename(status.manifest_count)
@@ -112,7 +113,7 @@ impl LocalStorageStatus {
             info!("Found CURRENT file.");
             current_file = match File::open(&current_file_path) {
                 Ok(f) => f,
-                Err(e) => {
+                Err(_) => {
                     error!("Open CURRENT file failed.");
                     std::process::exit(1);
                 }
@@ -121,14 +122,18 @@ impl LocalStorageStatus {
             current_file.read_to_string(&mut content).unwrap();
             status = match serde_json::from_str(&content) {
                 Ok(s) => s,
-                Err(e) => {
+                Err(_) => {
                     error!("Deserialize CURRENT file failed. CURRENT file might be corrupted.");
                     std::process::exit(1);
                 }
             };
-            manifest_file = match File::open(path.join(manifest_filename(status.manifest_count))) {
+            manifest_file = match OpenOptions::new()
+                .read(true)
+                .append(true)
+                .open(path.join(manifest_filename(status.manifest_count)))
+            {
                 Ok(f) => f,
-                Err(e) => {
+                Err(_) => {
                     error!("Open MANIFEST file failed.");
                     std::process::exit(1);
                 }
@@ -140,7 +145,7 @@ impl LocalStorageStatus {
     pub fn next_seq_num(&mut self) -> u64 {
         let seq_num = self.sequence_num.fetch_add(1, Ordering::Relaxed);
         let record = serde_json::to_string(&StatusChange::IncreaseSeqNum).unwrap();
-        self.manifest_file.write(record.as_bytes());
+        self.manifest_file.write(record.as_bytes()).unwrap();
         seq_num
     }
 
@@ -152,10 +157,11 @@ impl LocalStorageStatus {
         self.current_content.log_num
     }
 
+    #[allow(dead_code)]
     pub fn update_log_num(&mut self) -> u64 {
         self.current_content.log_num += 1;
         let record = serde_json::to_string(&StatusChange::IncreaseLogNum).unwrap();
-        self.manifest_file.write(record.as_bytes());
+        self.manifest_file.write(record.as_bytes()).unwrap();
         self.current_content.log_num
     }
 }
