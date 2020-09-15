@@ -1,6 +1,8 @@
 use failure::Context;
 use failure::{Backtrace, Fail};
 use std::fmt::{self, Display};
+use std::sync::PoisonError;
+
 #[derive(Debug)]
 pub struct VelliError {
     inner: Context<VelliErrorType>,
@@ -20,6 +22,14 @@ pub enum VelliErrorType {
     LockFailed,
     #[fail(display = "InvalidArguments")]
     InvalidArguments,
+    #[fail(display = "DecodeError")]
+    DecodeError,
+    #[fail(display = "PoisonError")]
+    PoisonError,
+    #[fail(display = "RecvError")]
+    RecvError,
+    #[fail(display = "SendError")]
+    SendError,
     #[fail(display = "Other")]
     Other,
 }
@@ -64,6 +74,24 @@ impl From<Context<VelliErrorType>> for VelliError {
 impl From<std::io::Error> for VelliError {
     fn from(_: std::io::Error) -> VelliError {
         VelliErrorType::IOError.into()
+    }
+}
+
+impl<T> From<PoisonError<T>> for VelliError {
+    fn from(_: PoisonError<T>) -> VelliError {
+        VelliErrorType::PoisonError.into()
+    }
+}
+
+impl From<std::sync::mpsc::RecvError> for VelliError {
+    fn from(_: std::sync::mpsc::RecvError) -> Self {
+        VelliErrorType::RecvError.into()
+    }
+}
+
+impl<T> From<std::sync::mpsc::SendError<T>> for VelliError {
+    fn from(_: std::sync::mpsc::SendError<T>) -> Self {
+        VelliErrorType::SendError.into()
     }
 }
 

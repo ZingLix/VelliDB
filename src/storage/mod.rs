@@ -1,3 +1,5 @@
+mod builder;
+mod options;
 mod status;
 mod store;
 mod types;

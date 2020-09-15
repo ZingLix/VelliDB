@@ -50,29 +50,20 @@ impl WalManager {
         let key_len = key.user_key().len() as u64;
         let mut target_str = Vec::<u8>::new();
         // key length
-        target_str.append(&mut key_len.to_be_bytes().to_vec());
-        // key
-        target_str.append(&mut key.user_key().clone());
-        // sequence number
-        target_str.append(&mut key.sequence_num().to_be_bytes().to_vec());
-        // value type
-        match key.value_type() {
-            ValueType::Deletion => {
-                target_str.push(0u8);
+        target_str.append(&mut key_len.to_le_bytes().to_vec());
+        // key as bytes
+        target_str.append(&mut key.to_bytes());
+        if key.value_type() != ValueType::Deletion {
+            if let Some(v) = value {
+                // value length
+                let value_len = v.len() as u64;
+                target_str.append(&mut value_len.to_le_bytes().to_vec());
+                // value
+                target_str.append(&mut v.clone());
+            } else {
+                Err(VelliErrorType::InvalidArguments)?;
             }
-            ValueType::Value => {
-                target_str.push(1u8);
-                if let Some(v) = value {
-                    // value length
-                    let value_len = v.len() as u64;
-                    target_str.append(&mut value_len.to_be_bytes().to_vec());
-                    // value
-                    target_str.append(&mut v.clone());
-                } else {
-                    Err(VelliErrorType::InvalidArguments)?;
-                }
-            }
-        };
+        }
         self.log_file.write_all(&target_str)?;
         Ok(())
     }
@@ -109,31 +100,18 @@ impl Iterator for WalIterator {
             std::process::exit(1);
         }
         // user key length
-        let key_len = u64::from_be_bytes(buf.clone());
-        let mut user_key = vec![0; key_len as usize];
-        // read user key
-        self.log_file.read_exact(&mut user_key).unwrap();
-        // read sequence number
-        self.log_file.read_exact(&mut buf).unwrap();
-        let sequence_num = u64::from_be_bytes(buf.clone());
-        let mut value_type_buf: [u8; 1] = [0; 1];
-        // read value type
-        self.log_file.read(&mut value_type_buf).unwrap();
-        let value_type = match value_type_buf[0] {
-            0 => ValueType::Deletion,
-            1 => ValueType::Value,
-            _ => {
-                error!("Decode WAL log failed.");
-                std::process::exit(1);
-            }
-        };
-        let key = InternalKey::new(user_key, sequence_num, value_type);
-        if value_type == ValueType::Deletion {
+        let key_len = u64::from_le_bytes(buf.clone());
+        let mut key_bytes = vec![0; key_len as usize + InternalKey::len_without_key()];
+        // read key
+        self.log_file.read_exact(&mut key_bytes).unwrap();
+        let key = InternalKey::decode(&key_bytes).expect("Decode WAL log key failed.");
+
+        if key.value_type() == ValueType::Deletion {
             return Some((key, None));
         }
         // read value length
         self.log_file.read_exact(&mut buf).unwrap();
-        let value_len = u64::from_be_bytes(buf);
+        let value_len = u64::from_le_bytes(buf);
         let mut value = vec![0; value_len as usize];
         // read value
         self.log_file.read_exact(&mut value).unwrap();
