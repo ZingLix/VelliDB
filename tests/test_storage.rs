@@ -91,11 +91,26 @@ fn massive_set() -> Result<()> {
     info!("DB path: {}", temp_dir.path().to_string_lossy());
     let mut store = LocalStorage::new(temp_dir.path().to_path_buf())
         .expect("unable to create LocalStorage object.");
-    for i in 0..10000 {
+    for i in 0..100000 {
         store.set(
             format!("key{}", i).as_bytes().to_vec(),
             format!("value{}", i).as_bytes().to_vec(),
         )?;
+    }
+    for i in 0..100000 {
+        assert_eq!(
+            store.get(format!("key{}", i).as_bytes().to_vec())?,
+            Some(format!("value{}", i).as_bytes().to_vec())
+        );
+    }
+    drop(store);
+    let mut store = LocalStorage::new(temp_dir.path().to_path_buf())
+        .expect("unable to create LocalStorage object.");
+    for i in 0..100000 {
+        assert_eq!(
+            store.get(format!("key{}", i).as_bytes().to_vec())?,
+            Some(format!("value{}", i).as_bytes().to_vec())
+        );
     }
     Ok(())
 }

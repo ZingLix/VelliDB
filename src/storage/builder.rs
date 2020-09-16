@@ -110,10 +110,10 @@ impl BlockBuilder {
     }
 }
 
-struct TableIndex {
-    offset: u64,
-    key_len: u64,
-    last_key: Vec<u8>,
+pub struct TableIndex {
+    pub offset: u64,
+    pub key_len: u64,
+    pub last_key: Vec<u8>,
 }
 
 impl TableIndex {
@@ -137,12 +137,20 @@ pub struct TableBuilder {
     offset: u64,
 }
 
+pub fn table_file_name_tmp(level: u8, number: u64) -> String {
+    format!("data_table_{}_{}.tmp", level, number)
+}
+
+pub fn table_file_name(level: u8, number: u64) -> String {
+    format!("data_table_{}_{}", level, number)
+}
+
 impl TableBuilder {
     pub fn new(base_path: &PathBuf, level: u8, number: u64) -> Result<Self> {
         let mut path = base_path.clone();
         path.push("data");
         std::fs::create_dir_all(&path).unwrap();
-        path.push(Self::table_file_name_tmp(level, number));
+        path.push(table_file_name_tmp(level, number));
         let table_file = std::fs::OpenOptions::new()
             .create(true)
             .write(true)
@@ -196,30 +204,20 @@ impl TableBuilder {
     pub fn done(mut self) -> Result<DataLevelIndex> {
         let last_key = self.block_builder.last_key().clone();
         self.write_block()?;
-
+        let count = self.index_list.len();
         for item in self.index_list {
             self.table_file.write_all(&item.to_bytes())?;
         }
         self.table_file.write_all(&self.offset.to_le_bytes())?;
+        self.table_file.write_all(&(count as u64).to_le_bytes())?;
         std::fs::rename(
-            &self
-                .path
-                .join(Self::table_file_name_tmp(self.level, self.number)),
-            self.path
-                .join(Self::table_file_name(self.level, self.number)),
+            &self.path.join(table_file_name_tmp(self.level, self.number)),
+            self.path.join(table_file_name(self.level, self.number)),
         )?;
         Ok(DataLevelIndex {
             file_num: self.number,
-            start_key: self.start_key.unwrap().to_bytes(),
-            end_key: last_key,
+            start_key: InternalKey::decode(&self.start_key.unwrap().to_bytes())?,
+            end_key: InternalKey::decode(&last_key)?,
         })
-    }
-
-    fn table_file_name_tmp(level: u8, number: u64) -> String {
-        format!("data_table_{}_{}.tmp", level, number)
-    }
-
-    fn table_file_name(level: u8, number: u64) -> String {
-        format!("data_table_{}_{}", level, number)
     }
 }

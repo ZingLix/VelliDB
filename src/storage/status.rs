@@ -1,4 +1,7 @@
+use super::builder::table_file_name;
 use super::options;
+use super::reader::TableReader;
+use super::types::InternalKey;
 use crate::Result;
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
@@ -6,14 +9,14 @@ use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{self, Ordering};
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct DataLevelIndex {
     pub file_num: u64,
-    pub start_key: Vec<u8>,
-    pub end_key: Vec<u8>,
+    pub start_key: InternalKey,
+    pub end_key: InternalKey,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 struct DataLevelInfo {
     // data file number
     pub number: u64,
@@ -50,7 +53,7 @@ enum StatusChange {
     IncreaseDataFileNum(usize),
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize)]
 struct CurrentFileContent {
     pub sequence_num: atomic::AtomicU64,
     pub log_num: u64,
@@ -236,8 +239,25 @@ impl LocalStorageStatus {
             .unwrap();
         self.current_file = new_cur_file;
         self.manifest_file = new_manifest_file;
-        std::fs::remove_file(self.path.join("CURRENT"));
-        std::fs::rename(self.path.join("CURRENT_new"), self.path.join("CURRENT"));
+        std::fs::remove_file(self.path.join("CURRENT"))?;
+        std::fs::rename(self.path.join("CURRENT_new"), self.path.join("CURRENT"))?;
         Ok(())
+    }
+
+    pub fn possible_table_file(&self, level: u8, key: &InternalKey) -> Result<Vec<TableReader>> {
+        let table_list = &self.current.data_file_index[level as usize];
+        let mut reader_vec = vec![];
+        for table in table_list.index.iter() {
+            if key >= &table.start_key && key <= &table.end_key {
+                reader_vec.push(TableReader::new(
+                    &self
+                        .path
+                        .clone()
+                        .join("data")
+                        .join(table_file_name(level, table.file_num)),
+                )?);
+            }
+        }
+        Ok(reader_vec)
     }
 }

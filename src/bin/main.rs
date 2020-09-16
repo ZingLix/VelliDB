@@ -19,5 +19,19 @@ fn main() {
             )
             .ok();
     }
+    for i in 0..2000 {
+        match store.get(format!("key{}", i).as_bytes().to_vec()).unwrap() {
+            Some(value) => {
+                info!(
+                    "{}:{}",
+                    format!("key{}", i),
+                    String::from_utf8(value).unwrap()
+                );
+            }
+            None => {
+                info!("{}: None", format!("key{}", i));
+            }
+        }
+    }
     drop(store)
 }

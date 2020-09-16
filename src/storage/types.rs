@@ -1,10 +1,10 @@
 use crate::{Result, VelliErrorType};
+use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::mem::size_of;
-
 pub type Key = Vec<u8>;
 
-#[derive(PartialEq, Copy, Clone)]
+#[derive(PartialEq, Copy, Clone, Serialize, Deserialize)]
 pub enum ValueType {
     Value,
     Deletion,
@@ -31,6 +31,7 @@ impl Into<u8> for ValueType {
     }
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct InternalKey {
     user_key: Vec<u8>,
     sequence_num: u64,
