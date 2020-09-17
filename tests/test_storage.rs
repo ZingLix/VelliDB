@@ -92,14 +92,14 @@ fn massive_set() -> Result<()> {
     info!("DB path: {}", temp_dir.path().to_string_lossy());
     let mut store = LocalStorage::new(temp_dir.path().to_path_buf())
         .expect("unable to create LocalStorage object.");
-    for i in 0..100000 {
+    for i in 0..10000 {
         store.set(
-            format!("key{:05}", i).as_bytes().to_vec(),
+            format!("key{}", i).as_bytes().to_vec(),
             format!("value{}", i).as_bytes().to_vec(),
         )?;
     }
-    for i in 0..100000 {
-        let k = format!("key{:05}", i);
+    for i in 0..10000 {
+        let k = format!("key{}", i);
         let val = store.get(k.as_bytes().to_vec())?;
         match val.clone() {
             Some(v) => {
@@ -114,15 +114,25 @@ fn massive_set() -> Result<()> {
         }
         assert_eq!(val, Some(format!("value{}", i).as_bytes().to_vec()));
     }
-    // drop(store);
-    // let mut store = LocalStorage::new(temp_dir.path().to_path_buf())
-    //     .expect("unable to create LocalStorage object.");
-    // for i in 0..100000 {
-    //     assert_eq!(
-    //         store.get(format!("key{}", i).as_bytes().to_vec())?,
-    //         Some(format!("value{}", i).as_bytes().to_vec())
-    //     );
-    // }
+    drop(store);
+    let mut store = LocalStorage::new(temp_dir.path().to_path_buf())
+        .expect("unable to create LocalStorage object.");
+    for i in 0..10000 {
+        let k = format!("key{}", i);
+        let val = store.get(k.as_bytes().to_vec())?;
+        match val.clone() {
+            Some(v) => {
+                let s = String::from_utf8(v.clone()).unwrap();
+
+                info!("{}:\t{}", k, s);
+            }
+            None => {
+                info!("{}: None", k);
+                panic!("{}", k);
+            }
+        }
+        assert_eq!(val, Some(format!("value{}", i).as_bytes().to_vec()));
+    }
     Ok(())
 }
 
@@ -131,30 +141,20 @@ fn read_table_file() -> Result<()> {
     env_logger::builder().filter_level(LevelFilter::Info).init();
     let temp_dir = TempDir::new().expect("unable to create temporary dir.");
 
-    let mut store = LocalStorage::new(temp_dir.path().to_path_buf())
-        .expect("unable to create LocalStorage object.");
-    for i in 0..10000 {
-        store
-            .set(
-                format!("key{}", i).as_bytes().to_vec(),
-                format!("value{}", i).as_bytes().to_vec(),
-            )
-            .ok();
-    }
-    for i in 0..10000 {
-        match store.get(format!("key{}", i).as_bytes().to_vec()).unwrap() {
-            Some(value) => {
-                assert_eq!(value, format!("value{}", i).as_bytes().to_vec());
-                // info!(
-                //     "{}:{}",
-                //     format!("key{}", i),
-                //     String::from_utf8(value).unwrap()
-                // );
+    let reader = velli_db::storage::reader::TableReader::new(&PathBuf::from(
+        r"/tmp/.tmpndpVFj/data/data_table_0_1",
+    ))
+    .unwrap();
+
+    for item in reader {
+        println!(
+            "{}:\t{}",
+            String::from_utf8(item.0.user_key().clone()).unwrap(),
+            match item.1 {
+                Some(v) => String::from_utf8(v).unwrap(),
+                None => "None".to_string(),
             }
-            None => {
-                info!("{}: None", format!("key{}", i));
-            }
-        }
+        );
     }
     Ok(())
 }

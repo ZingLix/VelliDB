@@ -102,7 +102,9 @@ impl TableReader {
                 block_idx = idx - 1;
                 break;
             }
-            if key_bytes <= self.index_offset[idx].last_key {
+            if InternalKey::decode(&key_bytes)?
+                <= InternalKey::decode(&self.index_offset[idx].last_key)?
+            {
                 block_idx = idx;
                 break;
             }
@@ -211,8 +213,16 @@ impl BlockReader {
         }
     }
 
+    fn read_restart_upper_bound(&self, index: usize) -> Result<KvPair> {
+        self.read_restart_head(index + 1)
+    }
+
     fn read_restart_head(&self, index: usize) -> Result<KvPair> {
-        let mut offset = self.restart_offset[index] as usize;
+        let mut offset = if index == 0 {
+            8 + 8 * self.restart_offset.len()
+        } else {
+            self.restart_offset[index - 1] as usize
+        };
         let mut count = [0u64; 3];
         for i in 0..count.len() {
             count[i] = utils::decode_u64(&self.bytes[offset..offset + 8].to_vec());
@@ -232,6 +242,11 @@ impl BlockReader {
     }
 
     pub fn upper_bound(&mut self, key: &InternalKey) -> Result<()> {
+        if key < &self.read_restart_head(0)?.0 {
+            self.cur = None;
+            self.offset = 8 + 8 * self.restart_offset.len();
+            return Ok(());
+        }
         let size = self.find_upper_bound(key.clone(), 0, self.restart_offset.len(), None, None)?;
         self.offset = if size == 0 {
             8 + 8 * self.restart_offset.len()
@@ -260,22 +275,25 @@ impl BlockReader {
         mut start_result: Option<InternalKey>,
         mut end_result: Option<InternalKey>,
     ) -> Result<usize> {
-        if end - start <= 1 {
+        if end - start <= 0 {
             return Ok(start);
         }
         let middle = (start + end) / 2;
-        let middle_result = Some(self.read_restart_head(middle)?.0);
+        let middle_result = Some(self.read_restart_upper_bound(middle)?.0);
         if start_result.is_none() {
             start_result = Some(self.read_restart_head(start)?.0);
         }
         if start_result.as_ref().unwrap() <= &key && &key < middle_result.as_ref().unwrap() {
             return self.find_upper_bound(key, start, middle, start_result, middle_result);
         }
-        if end_result.is_none() {
-            end_result = Some(self.read_restart_head(end)?.0);
+
+        if end != self.restart_offset.len() && end_result.is_none() {
+            end_result = Some(self.read_restart_upper_bound(end)?.0);
         }
-        if middle_result.as_ref().unwrap() <= &key && &key <= end_result.as_ref().unwrap() {
-            return self.find_upper_bound(key, middle, end, middle_result, end_result);
+        if middle_result.as_ref().unwrap() <= &key
+            && (end == self.restart_offset.len() || &key <= end_result.as_ref().unwrap())
+        {
+            return self.find_upper_bound(key, middle + 1, end, None, end_result);
         }
         Err(VelliErrorType::InvalidArguments)?
     }

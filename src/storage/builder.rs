@@ -95,8 +95,11 @@ impl BlockBuilder {
         count
     }
 
-    pub fn build(self) -> Vec<u8> {
+    pub fn build(mut self) -> Vec<u8> {
         let mut res = vec![];
+        if self.restart_list.len() > 0 && self.restart_list.last().unwrap() == &self.length {
+            self.restart_list.pop();
+        }
         // restart count
         res.append(&mut (self.restart_list.len() as u64).to_le_bytes().to_vec());
         // restart offset
@@ -111,7 +114,13 @@ impl BlockBuilder {
     }
 
     pub fn prepend_length(&self) -> u64 {
-        8 + 8 * self.restart_list.len() as u64
+        let restart_len =
+            if self.restart_list.len() > 0 && self.restart_list.last().unwrap() == &self.length {
+                self.restart_list.len() - 1
+            } else {
+                self.restart_list.len()
+            };
+        8 + 8 * restart_len as u64
     }
 
     pub fn length(&self) -> u64 {
@@ -188,6 +197,9 @@ impl TableBuilder {
     }
 
     pub fn add(&mut self, key: &InternalKey, value: &Option<Vec<u8>>) -> Result<()> {
+        if String::from_utf8(key.user_key().clone()).unwrap() == "key53" {
+            info!("{}", String::from_utf8(key.user_key().clone()).unwrap());
+        }
         if self.start_key == None {
             self.start_key = Some(key.clone());
         }
