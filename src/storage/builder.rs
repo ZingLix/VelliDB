@@ -86,7 +86,7 @@ impl BlockBuilder {
         count
     }
 
-    pub fn build(mut self) -> Vec<u8> {
+    fn build(mut self) -> Vec<u8> {
         let mut res = vec![];
         if self.restart_list.len() > 0 && self.restart_list.last().unwrap() == &self.length {
             self.restart_list.pop();
@@ -104,7 +104,7 @@ impl BlockBuilder {
         res
     }
 
-    pub fn prepend_length(&self) -> u64 {
+    fn prepend_length(&self) -> u64 {
         let restart_len =
             if self.restart_list.len() > 0 && self.restart_list.last().unwrap() == &self.length {
                 self.restart_list.len() - 1
@@ -114,11 +114,11 @@ impl BlockBuilder {
         8 + 8 * restart_len as u64
     }
 
-    pub fn length(&self) -> u64 {
+    fn length(&self) -> u64 {
         self.length + self.prepend_length()
     }
 
-    pub fn count(&self) -> usize {
+    fn count(&self) -> usize {
         self.entry_list.len()
     }
 }

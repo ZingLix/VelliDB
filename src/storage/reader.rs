@@ -20,11 +20,7 @@ impl TableReader {
         let mut reader = BufReader::new(file);
         reader.seek(SeekFrom::End(-16))?;
         let mut buf = [0u8; 8];
-        //reader.read_exact(&mut buf)?;
-        match reader.read_exact(&mut buf) {
-            Ok(_) => {}
-            Err(e) => println!("{}", e),
-        }
+        reader.read_exact(&mut buf)?;
         let index_offset = u64::from_le_bytes(buf.clone());
         reader.read_exact(&mut buf)?;
         let index_count = u64::from_le_bytes(buf.clone());
@@ -37,10 +33,6 @@ impl TableReader {
             let key_len = u64::from_le_bytes(buf.clone());
             let mut v = vec![0u8; key_len as usize];
             reader.read_exact(&mut v)?;
-            // info!(
-            //     "{}",
-            //     String::from_utf8(InternalKey::decode(&v).unwrap().user_key().clone()).unwrap()
-            // );
             index_offset.push(TableIndex {
                 offset,
                 key_len,
@@ -240,7 +232,7 @@ impl BlockReader {
         }
     }
 
-    pub fn upper_bound(&mut self, key: &InternalKey) -> Result<()> {
+    fn upper_bound(&mut self, key: &InternalKey) -> Result<()> {
         if key < &self.read_restart_head(0)?.0 {
             self.cur = None;
             self.offset = 8 + 8 * self.restart_offset.len();
@@ -297,7 +289,7 @@ impl BlockReader {
         Err(VelliErrorType::InvalidArguments)?
     }
 
-    pub fn current(&self) -> Option<KvPair> {
+    fn current(&self) -> Option<KvPair> {
         self.cur.clone()
     }
 }
