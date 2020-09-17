@@ -179,7 +179,7 @@ impl LocalStorage {
             for reader in table_list.iter_mut() {
                 reader.upper_bound(&ikey)?;
                 if let Some(kv) = reader.cur() {
-                    if &kv.0 == &ikey {
+                    if &kv.0.user_key() == &ikey.user_key() {
                         return Ok(kv.1);
                     }
                 }

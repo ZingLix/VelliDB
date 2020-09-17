@@ -1,6 +1,6 @@
 mod builder;
 mod options;
-mod reader;
+pub mod reader;
 mod status;
 mod store;
 mod types;

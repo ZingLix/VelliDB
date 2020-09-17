@@ -18,9 +18,13 @@ impl TableReader {
     pub fn new(path: &PathBuf) -> Result<Self> {
         let file = File::open(path).unwrap();
         let mut reader = BufReader::new(file);
-        reader.seek(SeekFrom::End(16))?;
+        reader.seek(SeekFrom::End(-16))?;
         let mut buf = [0u8; 8];
-        reader.read_exact(&mut buf)?;
+        //reader.read_exact(&mut buf)?;
+        match reader.read_exact(&mut buf) {
+            Ok(_) => {}
+            Err(e) => println!("{}", e),
+        }
         let index_offset = u64::from_le_bytes(buf.clone());
         reader.read_exact(&mut buf)?;
         let index_count = u64::from_le_bytes(buf.clone());
@@ -33,13 +37,16 @@ impl TableReader {
             let key_len = u64::from_le_bytes(buf.clone());
             let mut v = vec![0u8; key_len as usize];
             reader.read_exact(&mut v)?;
+            // info!(
+            //     "{}",
+            //     String::from_utf8(InternalKey::decode(&v).unwrap().user_key().clone()).unwrap()
+            // );
             index_offset.push(TableIndex {
                 offset,
                 key_len,
                 last_key: v,
             })
         }
-        index_offset.pop();
         reader.seek(SeekFrom::Start(0))?;
 
         Ok(TableReader {
@@ -72,6 +79,9 @@ impl Iterator for TableReader {
             };
             let end_offset = self.index_offset[self.idx].offset;
             let mut buffer = vec![0u8; (end_offset - start_offset) as usize];
+            self.table_file_reader
+                .seek(SeekFrom::Start(start_offset))
+                .unwrap();
             self.table_file_reader.read_exact(&mut buffer).unwrap();
             self.block_reader = Some(BlockReader::new(buffer));
             self.idx += 1;
@@ -89,9 +99,8 @@ impl TableReader {
         let mut block_idx = self.index_offset.len();
         for idx in 0..self.index_offset.len() + 1 {
             if idx == self.index_offset.len() {
-                self.idx = idx;
-                self.cur = None;
-                return Ok(());
+                block_idx = idx - 1;
+                break;
             }
             if key_bytes <= self.index_offset[idx].last_key {
                 block_idx = idx;
@@ -102,6 +111,15 @@ impl TableReader {
         self.idx = block_idx;
         self.next();
         self.block_reader.as_mut().unwrap().upper_bound(key)?;
+        if self.block_reader.as_mut().unwrap().current().is_none() {
+            if self.idx != 0 {
+                self.cur = None;
+                self.idx = block_idx - 1;
+                self.block_reader = None;
+                self.next();
+                self.block_reader.as_mut().unwrap().upper_bound(key)?;
+            }
+        }
         Ok(())
     }
 
@@ -169,8 +187,9 @@ impl BlockReader {
         offset += unshared_bytes;
         let value_data = self.bytes[offset..offset + value_bytes].to_vec();
         let mut key = self.last_entry_key[0..shared_bytes].to_vec();
+        offset += value_bytes;
         key.append(&mut unshared_key_data);
-        let ikey = match InternalKey::decode(&self.last_entry_key) {
+        let ikey = match InternalKey::decode(&key) {
             Ok(k) => k,
             Err(_) => {
                 error!("Decode block failed.");
@@ -214,9 +233,17 @@ impl BlockReader {
 
     pub fn upper_bound(&mut self, key: &InternalKey) -> Result<()> {
         let size = self.find_upper_bound(key.clone(), 0, self.restart_offset.len(), None, None)?;
-        self.offset = size;
+        self.offset = if size == 0 {
+            8 + 8 * self.restart_offset.len()
+        } else {
+            self.restart_offset[size - 1] as usize
+        };
         self.cur = None;
         while let Some(kv) = self.peek_next() {
+            debug!(
+                "{}",
+                String::from_utf8((kv.0).0.user_key().clone()).unwrap()
+            );
             if &(kv.0).0 > key {
                 break;
             }

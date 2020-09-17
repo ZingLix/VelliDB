@@ -2,6 +2,7 @@
 extern crate log;
 
 use log::LevelFilter;
+use std::path::PathBuf;
 use tempfile::TempDir;
 use velli_db::{LocalStorage, Result};
 
@@ -93,24 +94,67 @@ fn massive_set() -> Result<()> {
         .expect("unable to create LocalStorage object.");
     for i in 0..100000 {
         store.set(
-            format!("key{}", i).as_bytes().to_vec(),
+            format!("key{:05}", i).as_bytes().to_vec(),
             format!("value{}", i).as_bytes().to_vec(),
         )?;
     }
     for i in 0..100000 {
-        assert_eq!(
-            store.get(format!("key{}", i).as_bytes().to_vec())?,
-            Some(format!("value{}", i).as_bytes().to_vec())
-        );
+        let k = format!("key{:05}", i);
+        let val = store.get(k.as_bytes().to_vec())?;
+        match val.clone() {
+            Some(v) => {
+                let s = String::from_utf8(v.clone()).unwrap();
+
+                info!("{}:\t{}", k, s);
+            }
+            None => {
+                info!("{}: None", k);
+                panic!("{}", k);
+            }
+        }
+        assert_eq!(val, Some(format!("value{}", i).as_bytes().to_vec()));
     }
-    drop(store);
+    // drop(store);
+    // let mut store = LocalStorage::new(temp_dir.path().to_path_buf())
+    //     .expect("unable to create LocalStorage object.");
+    // for i in 0..100000 {
+    //     assert_eq!(
+    //         store.get(format!("key{}", i).as_bytes().to_vec())?,
+    //         Some(format!("value{}", i).as_bytes().to_vec())
+    //     );
+    // }
+    Ok(())
+}
+
+#[test]
+fn read_table_file() -> Result<()> {
+    env_logger::builder().filter_level(LevelFilter::Info).init();
+    let temp_dir = TempDir::new().expect("unable to create temporary dir.");
+
     let mut store = LocalStorage::new(temp_dir.path().to_path_buf())
         .expect("unable to create LocalStorage object.");
-    for i in 0..100000 {
-        assert_eq!(
-            store.get(format!("key{}", i).as_bytes().to_vec())?,
-            Some(format!("value{}", i).as_bytes().to_vec())
-        );
+    for i in 0..10000 {
+        store
+            .set(
+                format!("key{}", i).as_bytes().to_vec(),
+                format!("value{}", i).as_bytes().to_vec(),
+            )
+            .ok();
+    }
+    for i in 0..10000 {
+        match store.get(format!("key{}", i).as_bytes().to_vec()).unwrap() {
+            Some(value) => {
+                assert_eq!(value, format!("value{}", i).as_bytes().to_vec());
+                // info!(
+                //     "{}:{}",
+                //     format!("key{}", i),
+                //     String::from_utf8(value).unwrap()
+                // );
+            }
+            None => {
+                info!("{}: None", format!("key{}", i));
+            }
+        }
     }
     Ok(())
 }

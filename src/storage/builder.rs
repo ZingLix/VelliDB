@@ -48,6 +48,15 @@ impl BlockBuilder {
         }
     }
 
+    fn new_with_last_key(last_key: Vec<u8>) -> Self {
+        BlockBuilder {
+            last_key,
+            entry_list: vec![],
+            length: 0,
+            restart_list: vec![],
+        }
+    }
+
     fn add(&mut self, key: &InternalKey, value: &Vec<u8>) {
         let key_bytes = key.to_bytes();
         let shared_bytes = Self::compare_bytes(&self.last_key, &key_bytes) as u64;
@@ -88,11 +97,11 @@ impl BlockBuilder {
 
     pub fn build(self) -> Vec<u8> {
         let mut res = vec![];
-        // entry count
-        res.append(&mut (self.entry_list.len() as u64).to_le_bytes().to_vec());
+        // restart count
+        res.append(&mut (self.restart_list.len() as u64).to_le_bytes().to_vec());
         // restart offset
         for item in self.restart_list.iter() {
-            res.append(&mut item.to_le_bytes().to_vec());
+            res.append(&mut (item + self.prepend_length()).to_le_bytes().to_vec());
         }
         // entry list
         for item in self.entry_list.iter() {
@@ -101,12 +110,20 @@ impl BlockBuilder {
         res
     }
 
+    pub fn prepend_length(&self) -> u64 {
+        8 + 8 * self.restart_list.len() as u64
+    }
+
     pub fn length(&self) -> u64 {
-        self.length
+        self.length + self.prepend_length()
     }
 
     pub fn last_key(&self) -> &Vec<u8> {
         &self.last_key
+    }
+
+    pub fn count(&self) -> usize {
+        self.entry_list.len()
     }
 }
 
@@ -135,6 +152,7 @@ pub struct TableBuilder {
     index_list: Vec<TableIndex>,
     start_key: Option<InternalKey>,
     offset: u64,
+    last_key: Vec<u8>,
 }
 
 pub fn table_file_name_tmp(level: u8, number: u64) -> String {
@@ -165,6 +183,7 @@ impl TableBuilder {
             index_list: vec![],
             start_key: None,
             offset: 0,
+            last_key: vec![],
         })
     }
 
@@ -177,6 +196,7 @@ impl TableBuilder {
         } else {
             self.block_builder.add(key, &vec![]);
         }
+        self.last_key = key.to_bytes();
         if self.block_builder.length() > options::BLOCK_SIZE as u64 {
             self.write_block()?;
         }
@@ -184,10 +204,11 @@ impl TableBuilder {
     }
 
     fn write_block(&mut self) -> Result<()> {
-        if self.block_builder.length() == 0 {
+        if self.block_builder.count() == 0 {
             return Ok(());
         }
-        let last_key = self.block_builder.last_key();
+        let last_key = self.last_key.clone();
+        self.offset += self.block_builder.length();
         let index = TableIndex {
             offset: self.offset,
             key_len: last_key.len() as u64,
@@ -197,13 +218,12 @@ impl TableBuilder {
         let block_builder = std::mem::take(&mut self.block_builder);
         self.block_builder = BlockBuilder::new();
         self.table_file.write_all(&block_builder.build())?;
-        self.offset += self.block_builder.length;
         Ok(())
     }
 
     pub fn done(mut self) -> Result<DataLevelIndex> {
-        let last_key = self.block_builder.last_key().clone();
         self.write_block()?;
+        let last_key = self.last_key;
         let count = self.index_list.len();
         for item in self.index_list {
             self.table_file.write_all(&item.to_bytes())?;
