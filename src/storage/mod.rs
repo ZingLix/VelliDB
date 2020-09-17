@@ -1,8 +1,9 @@
 mod builder;
 mod options;
-pub mod reader;
+mod reader;
 mod status;
 mod store;
+mod test;
 mod types;
 mod wal;
 pub use store::LocalStorage;

@@ -1,5 +1,4 @@
 use super::builder::table_file_name;
-use super::options;
 use super::reader::TableReader;
 use super::types::InternalKey;
 use crate::Result;
@@ -39,7 +38,6 @@ type DataFileIndex = Vec<DataLevelInfo>;
 
 pub struct LocalStorageStatus {
     current: CurrentFileContent,
-    #[allow(dead_code)]
     current_file: File,
     manifest_file: File,
     path: PathBuf,
@@ -202,21 +200,15 @@ impl LocalStorageStatus {
         self.current.log_num
     }
 
-    pub fn update_log_num(&mut self) -> u64 {
-        self.current.log_num += 1;
-        let record = serde_json::to_string(&StatusChange::IncreaseLogNum).unwrap();
-        self.manifest_file.write(record.as_bytes()).unwrap();
-        self.current.log_num
-    }
-
     pub fn next_data_file_num(&mut self, level: usize) -> u64 {
         self.current.data_file_index[level].number += 1;
         self.current.data_file_index[level].number
     }
 
-    pub fn add_data_file(&mut self, level: usize, file_index: DataLevelIndex) {
+    pub fn add_data_file(&mut self, level: usize, file_index: DataLevelIndex) -> Result<()> {
         self.current.data_file_index[level].index.push(file_index);
-        self.update_current_file();
+        self.update_current_file()?;
+        Ok(())
     }
 
     pub fn update_current_file(&mut self) -> Result<()> {

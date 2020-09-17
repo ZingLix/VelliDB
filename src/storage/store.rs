@@ -28,8 +28,10 @@ pub struct LocalStorage {
     wal_log: WalManager,
     mmt: MemTable,
     imm: Arc<Option<MemTable>>,
+    #[allow(dead_code)]
     path: PathBuf,
     compact_sender: mpsc::Sender<CompactMessage>,
+    #[allow(dead_code)]
     compact_thread: JoinHandle<()>,
     minor_compacting: Arc<Mutex<bool>>,
 }
@@ -224,7 +226,7 @@ impl LocalStorage {
                     let index = table_builder.done()?;
                     {
                         let mut guard = status.lock()?;
-                        guard.add_data_file(level, index);
+                        guard.add_data_file(level, index)?;
                     }
                     *compacting_guard = false;
                     info!("Minor compaction request finished.");

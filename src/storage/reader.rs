@@ -1,8 +1,8 @@
 use super::builder::TableIndex;
-use super::types::{InternalKey, KvPair, Value};
+use super::types::{InternalKey, KvPair};
 use crate::util::utils;
 use crate::{Result, VelliErrorType};
-use std::fs::{self, File};
+use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::PathBuf;
 
@@ -228,10 +228,9 @@ impl BlockReader {
             count[i] = utils::decode_u64(&self.bytes[offset..offset + 8].to_vec());
             offset += 8;
         }
-        let shared_bytes = count[0] as usize;
         let unshared_bytes = count[1] as usize;
         let value_bytes = count[2] as usize;
-        let mut key = self.bytes[offset..offset + unshared_bytes].to_vec();
+        let key = self.bytes[offset..offset + unshared_bytes].to_vec();
         offset += unshared_bytes;
         if value_bytes != 0 {
             let value_data = self.bytes[offset..offset + value_bytes].to_vec();

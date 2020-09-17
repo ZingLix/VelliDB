@@ -1,8 +1,6 @@
 #[macro_use]
 extern crate log;
 
-use log::LevelFilter;
-use std::path::PathBuf;
 use tempfile::TempDir;
 use velli_db::{LocalStorage, Result};
 
@@ -87,7 +85,6 @@ fn overwrite_value_and_restore_repeatedly() -> Result<()> {
 
 #[test]
 fn massive_set() -> Result<()> {
-    env_logger::builder().filter_level(LevelFilter::Info).init();
     let temp_dir = TempDir::new().expect("unable to create temporary dir.");
     info!("DB path: {}", temp_dir.path().to_string_lossy());
     let mut store = LocalStorage::new(temp_dir.path().to_path_buf())
@@ -115,7 +112,7 @@ fn massive_set() -> Result<()> {
         assert_eq!(val, Some(format!("value{}", i).as_bytes().to_vec()));
     }
     drop(store);
-    let mut store = LocalStorage::new(temp_dir.path().to_path_buf())
+    let store = LocalStorage::new(temp_dir.path().to_path_buf())
         .expect("unable to create LocalStorage object.");
     for i in 0..10000 {
         let k = format!("key{}", i);
@@ -132,29 +129,6 @@ fn massive_set() -> Result<()> {
             }
         }
         assert_eq!(val, Some(format!("value{}", i).as_bytes().to_vec()));
-    }
-    Ok(())
-}
-
-#[test]
-fn read_table_file() -> Result<()> {
-    env_logger::builder().filter_level(LevelFilter::Info).init();
-    let temp_dir = TempDir::new().expect("unable to create temporary dir.");
-
-    let reader = velli_db::storage::reader::TableReader::new(&PathBuf::from(
-        r"/tmp/.tmpndpVFj/data/data_table_0_1",
-    ))
-    .unwrap();
-
-    for item in reader {
-        println!(
-            "{}:\t{}",
-            String::from_utf8(item.0.user_key().clone()).unwrap(),
-            match item.1 {
-                Some(v) => String::from_utf8(v).unwrap(),
-                None => "None".to_string(),
-            }
-        );
     }
     Ok(())
 }

@@ -1,6 +1,6 @@
 use super::options;
 use super::status::DataLevelIndex;
-use super::types::{InternalKey, KvPair, Value};
+use super::types::{InternalKey, Value};
 use crate::Result;
 use std::fs::File;
 use std::io::Write;
@@ -42,15 +42,6 @@ impl BlockBuilder {
     fn new() -> Self {
         BlockBuilder {
             last_key: vec![],
-            entry_list: vec![],
-            length: 0,
-            restart_list: vec![],
-        }
-    }
-
-    fn new_with_last_key(last_key: Vec<u8>) -> Self {
-        BlockBuilder {
-            last_key,
             entry_list: vec![],
             length: 0,
             restart_list: vec![],
@@ -125,10 +116,6 @@ impl BlockBuilder {
 
     pub fn length(&self) -> u64 {
         self.length + self.prepend_length()
-    }
-
-    pub fn last_key(&self) -> &Vec<u8> {
-        &self.last_key
     }
 
     pub fn count(&self) -> usize {

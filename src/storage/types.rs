@@ -4,7 +4,7 @@ use std::cmp::Ordering;
 use std::mem::size_of;
 pub type Key = Vec<u8>;
 
-#[derive(PartialEq, Copy, Clone, Serialize, Deserialize)]
+#[derive(PartialEq, Copy, Clone, Serialize, Deserialize, Debug)]
 pub enum ValueType {
     Value,
     Deletion,
@@ -31,7 +31,7 @@ impl Into<u8> for ValueType {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct InternalKey {
     user_key: Vec<u8>,
     sequence_num: u64,
@@ -70,6 +70,7 @@ impl InternalKey {
         &self.user_key
     }
 
+    #[allow(dead_code)]
     pub fn sequence_num(&self) -> u64 {
         self.sequence_num
     }
@@ -81,7 +82,6 @@ impl InternalKey {
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut key = self.user_key.clone();
         key.append(&mut self.sequence_num.to_le_bytes().to_vec());
-        let tmp: u8 = self.value_type.into();
         key.push(self.value_type.into());
         key
     }
