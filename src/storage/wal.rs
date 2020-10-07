@@ -1,7 +1,7 @@
 use super::types::{InternalKey, KvPair, Value, ValueType};
 use crate::{Result, VelliErrorType};
 use std::fs::{self, File};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 
 pub struct WalManager {
@@ -65,6 +65,7 @@ impl WalManager {
             }
         }
         self.log_file.write_all(&target_str)?;
+        self.log_file.flush()?;
         Ok(())
     }
 
@@ -74,12 +75,12 @@ impl WalManager {
 }
 
 pub struct WalIterator {
-    log_file: File,
+    log_file: BufReader<File>,
 }
 
 impl WalIterator {
     pub fn new(log_file: &File) -> WalIterator {
-        let mut log_file = log_file.try_clone().unwrap();
+        let mut log_file = BufReader::new(log_file.try_clone().unwrap());
         log_file.seek(SeekFrom::Start(0)).unwrap();
         WalIterator { log_file }
     }
@@ -90,15 +91,13 @@ impl Iterator for WalIterator {
 
     fn next(&mut self) -> Option<Self::Item> {
         let mut buf: [u8; 8] = [0u8; 8];
-        let size = self.log_file.read(&mut buf).unwrap();
-        if size == 0 {
-            // End of file
-            return None;
-        }
-        if size != buf.len() {
-            error!("Decode WAL log failed.");
-            std::process::exit(1);
-        }
+        match self.log_file.read_exact(&mut buf) {
+            Ok(size) => size,
+            Err(_) => {
+                return None;
+            }
+        };
+
         // user key length
         let key_len = u64::from_le_bytes(buf.clone());
         let mut key_bytes = vec![0; key_len as usize + InternalKey::len_without_key()];

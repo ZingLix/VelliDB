@@ -87,15 +87,16 @@ fn overwrite_value_and_restore_repeatedly() -> Result<()> {
 fn massive_set() -> Result<()> {
     let temp_dir = TempDir::new().expect("unable to create temporary dir.");
     info!("DB path: {}", temp_dir.path().to_string_lossy());
+    let count = 10000;
     let mut store = LocalStorage::new(temp_dir.path().to_path_buf())
         .expect("unable to create LocalStorage object.");
-    for i in 0..10000 {
+    for i in 0..count {
         store.set(
             format!("key{}", i).as_bytes().to_vec(),
             format!("value{}", i).as_bytes().to_vec(),
         )?;
     }
-    for i in 0..10000 {
+    for i in 0..count {
         let k = format!("key{}", i);
         let val = store.get(k.as_bytes().to_vec())?;
         match val.clone() {
@@ -114,7 +115,7 @@ fn massive_set() -> Result<()> {
     drop(store);
     let store = LocalStorage::new(temp_dir.path().to_path_buf())
         .expect("unable to create LocalStorage object.");
-    for i in 0..10000 {
+    for i in 0..count {
         let k = format!("key{}", i);
         let val = store.get(k.as_bytes().to_vec())?;
         match val.clone() {

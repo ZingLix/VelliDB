@@ -3,7 +3,7 @@ use super::status::DataLevelIndex;
 use super::types::{InternalKey, Value};
 use crate::Result;
 use std::fs::File;
-use std::io::Write;
+use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 
 struct BlockEntry {
@@ -144,7 +144,7 @@ pub struct TableBuilder {
     number: u64,
     path: PathBuf,
     block_builder: BlockBuilder,
-    table_file: File,
+    table_file: BufWriter<File>,
     index_list: Vec<TableIndex>,
     start_key: Option<InternalKey>,
     offset: u64,
@@ -169,13 +169,14 @@ impl TableBuilder {
             .create(true)
             .write(true)
             .open(&path)?;
+        let writer = BufWriter::new(table_file);
         path.pop();
         Ok(TableBuilder {
             level,
             number,
             path,
             block_builder: BlockBuilder::new(),
-            table_file,
+            table_file: writer,
             index_list: vec![],
             start_key: None,
             offset: 0,
@@ -229,6 +230,7 @@ impl TableBuilder {
         }
         self.table_file.write_all(&self.offset.to_le_bytes())?;
         self.table_file.write_all(&(count as u64).to_le_bytes())?;
+        self.table_file.flush()?;
         std::fs::rename(
             &self.path.join(table_file_name_tmp(self.level, self.number)),
             self.path.join(table_file_name(self.level, self.number)),
