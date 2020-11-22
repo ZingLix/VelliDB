@@ -40,14 +40,14 @@ impl NodeCore {
         }
     }
 
-    pub fn recvAppendEntriesRPC(&mut self, request: AppendEntriesRPC) -> AppendEntriesReply {
+    pub fn recv_append_entries_rpc(&mut self, request: AppendEntriesRPC) -> AppendEntriesReply {
         // If RPC request or response contains term T > currentTerm:
         // set currentTerm = T, convert to follower (§5.1)
         if request.term > self.current_term {
-            self.applyNewTerm(request.term);
+            self.apply_new_term(request.term);
         }
         if self.state == State::Candidate {
-            self.convertToFollower();
+            self.convert_to_follower();
         }
         let mut reply = AppendEntriesReply {
             term: self.current_term,
@@ -90,11 +90,11 @@ impl NodeCore {
         reply
     }
 
-    pub fn recvRequestVoteRPC(&mut self, request: RequestVoteRPC) -> RequestVoteReply {
+    pub fn recv_request_vote_rpc(&mut self, request: RequestVoteRPC) -> RequestVoteReply {
         // If RPC request or response contains term T > currentTerm:
         // set currentTerm = T, convert to follower (§5.1)
         if request.term > self.current_term {
-            self.applyNewTerm(request.term);
+            self.apply_new_term(request.term);
         }
 
         let mut reply = RequestVoteReply {
@@ -137,7 +137,7 @@ impl NodeCore {
         {
             self.vote_count += 1;
             if self.vote_count > self.node_list.len() / 2 {
-                self.convertToLeader();
+                self.convert_to_leader();
             }
         }
     }
@@ -171,24 +171,24 @@ impl NodeCore {
     //TODO
     pub fn sendAppendEntriesRPC(&mut self) {}
 
-    fn applyNewTerm(&mut self, new_term: u64) {
+    fn apply_new_term(&mut self, new_term: u64) {
         self.current_term = new_term;
         self.voted_for = None;
-        self.convertToFollower();
+        self.convert_to_follower();
     }
 
-    fn convertToFollower(&mut self) {
+    fn convert_to_follower(&mut self) {
         self.state = State::Follower;
     }
 
-    fn convertToCandidate(&mut self) {
+    fn convert_to_candidate(&mut self) {
         self.state = State::Candidate;
         self.current_term += 1;
         self.voted_for = Some(self.id);
         self.sendRequestVoteRPC();
     }
 
-    fn initLeaderState(&mut self) {
+    fn init_leader_state(&mut self) {
         self.next_index = HashMap::new();
         self.match_index = HashMap::new();
         let last_index = match self.log.last() {
@@ -201,9 +201,9 @@ impl NodeCore {
         }
     }
 
-    fn convertToLeader(&mut self) {
+    fn convert_to_leader(&mut self) {
         self.state = State::Leader;
-        self.initLeaderState();
+        self.init_leader_state();
         self.sendAppendEntriesRPC();
     }
 }
