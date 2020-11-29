@@ -1,3 +1,5 @@
+use crate::Result;
+
 use super::log::LogEntry;
 use super::rpc::*;
 use std::collections::HashMap;
@@ -21,6 +23,8 @@ pub struct NodeCore {
     next_index: HashMap<u64, usize>,
     match_index: HashMap<u64, usize>,
     vote_count: usize,
+    election_elapsed: usize,
+    heartbeat_elapsed: usize,
 }
 
 impl NodeCore {
@@ -37,6 +41,8 @@ impl NodeCore {
             next_index: HashMap::new(),
             match_index: HashMap::new(),
             vote_count: 0,
+            election_elapsed: 0,
+            heartbeat_elapsed: 0,
         }
     }
 
@@ -130,7 +136,7 @@ impl NodeCore {
         reply
     }
 
-    pub fn recvRequestVoteReply(&mut self, reply: RequestVoteReply) {
+    pub fn recv_request_vote_reply(&mut self, reply: RequestVoteReply) {
         if reply.term == self.current_term
             && self.state == State::Leader
             && reply.vote_granted == true
@@ -142,7 +148,12 @@ impl NodeCore {
         }
     }
 
-    pub fn recvAppendEntriesReply(&mut self, id: u64, last_idx: usize, reply: AppendEntriesReply) {
+    pub fn recv_append_entries_reply(
+        &mut self,
+        id: u64,
+        last_idx: usize,
+        reply: AppendEntriesReply,
+    ) {
         if self.state != State::Leader {
             return;
         }
@@ -205,5 +216,23 @@ impl NodeCore {
         self.state = State::Leader;
         self.init_leader_state();
         self.sendAppendEntriesRPC();
+    }
+
+    fn election_timeout() -> usize {
+        4
+    }
+
+    fn tick(&mut self) {
+        match self.state {
+            State::Follower | State::Candidate => self.tick_election(),
+            State::Leader => self.sendAppendEntriesRPC(),
+        }
+    }
+
+    fn tick_election(&mut self) {
+        self.heartbeat_elapsed += 1;
+        if self.heartbeat_elapsed > Self::election_timeout() {
+            self.convert_to_candidate();
+        }
     }
 }

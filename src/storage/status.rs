@@ -240,8 +240,8 @@ impl LocalStorageStatus {
         let table_list = &self.current.data_file_index[level as usize];
         let mut reader_vec = vec![];
         for table in table_list.index.iter() {
-            if key.user_key() >= &table.start_key.user_key()
-                && key.user_key() <= &table.end_key.user_key()
+            if &key.user_key() >= &table.start_key.user_key()
+                && &key.user_key() <= &table.end_key.user_key()
             {
                 reader_vec.push(TableReader::new(
                     &self

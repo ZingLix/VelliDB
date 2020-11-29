@@ -2,7 +2,7 @@ use failure::Context;
 use failure::{Backtrace, Fail};
 use std::fmt::{self, Display};
 use std::sync::PoisonError;
-
+use surf::Error;
 #[derive(Debug)]
 pub struct VelliError {
     inner: Context<VelliErrorType>,
@@ -30,6 +30,10 @@ pub enum VelliErrorType {
     RecvError,
     #[fail(display = "SendError")]
     SendError,
+    #[fail(display = "ConnectionError")]
+    ConnectionError,
+    #[fail(display = "SurfError")]
+    SurfError,
     #[fail(display = "Other")]
     Other,
 }
@@ -92,6 +96,12 @@ impl From<std::sync::mpsc::RecvError> for VelliError {
 impl<T> From<std::sync::mpsc::SendError<T>> for VelliError {
     fn from(_: std::sync::mpsc::SendError<T>) -> Self {
         VelliErrorType::SendError.into()
+    }
+}
+
+impl From<surf::Error> for VelliError {
+    fn from(_: surf::Error) -> Self {
+        VelliErrorType::SurfError.into()
     }
 }
 
