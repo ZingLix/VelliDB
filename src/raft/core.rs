@@ -1,8 +1,11 @@
 use crate::Result;
 
 use super::log::LogEntry;
+use super::message::Message;
 use super::rpc::*;
 use std::collections::HashMap;
+
+pub type MsgList = Vec<Message>;
 
 #[derive(Debug, PartialEq)]
 enum State {
@@ -175,12 +178,59 @@ impl NodeCore {
         }
     }
 
-    //TODO
-    pub fn sendRequestVoteRPC(&mut self) {
+    pub fn send_request_vote_rpc(&mut self) -> MsgList {
         self.vote_count = 1;
+        let mut list = vec![];
+        for node in &self.node_list {
+            let mut request = RequestVoteRPC {
+                term: self.current_term,
+                candidate_id: self.id,
+                last_log_index: self
+                    .log
+                    .last()
+                    .unwrap_or(&LogEntry { term: 0, index: 0 })
+                    .index,
+                last_log_term: 0,
+            };
+            if self.log.len() > 0 {
+                request.last_log_term = self.log.last().unwrap().term;
+            }
+            list.push(Message::SendRequestVoteRPC {
+                id: node.clone(),
+                request,
+            });
+        }
+        list
     }
-    //TODO
-    pub fn sendAppendEntriesRPC(&mut self) {}
+
+    pub fn send_append_entries_rpc(&mut self) -> MsgList {
+        let mut list = vec![];
+        for node in &self.node_list {
+            let mut request = AppendEntriesRPC {
+                term: self.current_term,
+                leader_id: self.id,
+                prev_log_index: 0,
+                prev_log_term: 0,
+                leader_commit: self.commit_index,
+                entries: vec![],
+            };
+            let next_index = self.next_index[&node] - 1;
+            if self.log.len() > 0 {
+                request.prev_log_index = next_index - 1;
+                if self.log.len() > 1 && next_index > 1 {
+                    request.prev_log_term = self.log[request.prev_log_index - 1].term
+                }
+                request
+                    .entries
+                    .clone_from_slice(&self.log[next_index - 1..]);
+            }
+            list.push(Message::SendAppendEntriesRPC {
+                id: node.clone(),
+                request,
+            })
+        }
+        list
+    }
 
     fn apply_new_term(&mut self, new_term: u64) {
         self.current_term = new_term;
@@ -192,11 +242,11 @@ impl NodeCore {
         self.state = State::Follower;
     }
 
-    fn convert_to_candidate(&mut self) {
+    fn convert_to_candidate(&mut self) -> MsgList {
         self.state = State::Candidate;
         self.current_term += 1;
         self.voted_for = Some(self.id);
-        self.sendRequestVoteRPC();
+        self.send_request_vote_rpc()
     }
 
     fn init_leader_state(&mut self) {
@@ -215,24 +265,25 @@ impl NodeCore {
     fn convert_to_leader(&mut self) {
         self.state = State::Leader;
         self.init_leader_state();
-        self.sendAppendEntriesRPC();
+        self.send_append_entries_rpc();
     }
 
     fn election_timeout() -> usize {
         4
     }
 
-    fn tick(&mut self) {
+    pub fn tick(&mut self) -> MsgList {
         match self.state {
             State::Follower | State::Candidate => self.tick_election(),
-            State::Leader => self.sendAppendEntriesRPC(),
+            State::Leader => self.send_append_entries_rpc(),
         }
     }
 
-    fn tick_election(&mut self) {
+    fn tick_election(&mut self) -> MsgList {
         self.heartbeat_elapsed += 1;
         if self.heartbeat_elapsed > Self::election_timeout() {
-            self.convert_to_candidate();
+            return self.convert_to_candidate();
         }
+        vec![]
     }
 }
