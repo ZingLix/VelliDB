@@ -154,16 +154,18 @@ impl NodeCore {
     pub fn recv_append_entries_reply(
         &mut self,
         id: u64,
-        last_idx: usize,
+        request: AppendEntriesRPC,
         reply: AppendEntriesReply,
     ) {
         if self.state != State::Leader {
             return;
         }
         if reply.success {
-            if last_idx >= self.next_index[&id] {
-                self.next_index.insert(id, last_idx + 1);
-                self.match_index.insert(id, last_idx);
+            if self.log.len() >= self.next_index[&id] && request.entries.len() > 0 {
+                self.next_index
+                    .insert(id, request.entries.last().unwrap().index + 1);
+                self.match_index
+                    .insert(id, request.entries.last().unwrap().index);
             }
             let mut match_list = self.match_index.values().cloned().collect::<Vec<usize>>();
             match_list.sort();

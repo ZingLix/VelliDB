@@ -6,11 +6,10 @@ use crate::Result;
 use crate::{storage::LocalStorage, VelliErrorType};
 use async_std::prelude::*;
 use async_std::stream::{self, Interval};
-use async_std::sync::{Arc, Mutex};
+use async_std::sync::{channel, Arc, Mutex, Receiver, Sender};
 use async_std::task;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::{Duration, Instant};
 use surf;
 use tide::{Request, Response, StatusCode};
@@ -60,7 +59,7 @@ impl Node {
     pub fn new(path: PathBuf, self_info: NodeInfo, other_nodes: Vec<NodeInfo>) -> Node {
         let node = NodeCore::new(self_info.id, other_nodes.iter().map(|x| x.id).collect());
         let node = Arc::new(Mutex::new(node));
-        let (sx, rx) = channel();
+        let (sx, rx) = channel(20);
         Node {
             self_info,
             other_nodes: other_nodes
@@ -87,14 +86,20 @@ impl Node {
 
     pub async fn start(mut self) -> Result<()> {
         self.init_server()?;
+        self.queue().await?;
         self.server.listen(self.self_info.address.clone()).await?;
+        info!(
+            "Node {} running on {}...",
+            self.self_info.id, self.self_info.address
+        );
         let tick_timeout = Duration::from_millis(100);
         let mut interval = stream::interval(tick_timeout);
 
         loop {
             while let Some(_) = interval.next().await {
                 let mut guard = self.node.lock().await;
-                guard.tick();
+                let msg_list = guard.tick();
+                self.msg_list_queue_sx.send(msg_list).await;
             }
         }
 
@@ -104,7 +109,6 @@ impl Node {
     async fn send_append_entries_rpc(
         &self,
         target_id: u64,
-        last_idx: usize,
         request: AppendEntriesRPC,
     ) -> Result<()> {
         let body = surf::Body::from_json(&request)?;
@@ -120,7 +124,7 @@ impl Node {
         }
         let reply: AppendEntriesReply = response.body_json().await?;
         let mut guard = self.node.lock().await;
-        guard.recv_append_entries_reply(target_id, last_idx, reply);
+        guard.recv_append_entries_reply(target_id, request, reply);
         Ok(())
     }
 
@@ -140,8 +144,47 @@ impl Node {
 
         let mut guard = self.node.lock().await;
         guard.recv_request_vote_reply(reply);
+
         Ok(())
     }
 
-    async fn queue(&mut self) {}
+    async fn queue(&mut self) -> Result<()> {
+        match self.msg_list_queue_rx.recv().await {
+            Ok(msg_list) => {
+                for msg in msg_list {
+                    self.deal_msg(msg).await?;
+                }
+            }
+            Err(_) => return Err(VelliErrorType::RecvError)?,
+        }
+        Ok(())
+    }
+
+    async fn deal_msg(&mut self, msg: Message) -> Result<()> {
+        match msg {
+            Message::SendAppendEntriesRPC { id, request } => {
+                Ok(self.send_append_entries_rpc(id, request).await?)
+            }
+            Message::SendRequestVoteRPC { id, request } => {
+                Ok(self.send_request_vote_rpc(id, request).await?)
+            }
+            _ => Err(VelliErrorType::InvalidArguments)?,
+        }
+    }
+
+    pub fn handle(&self) -> NodeHandle {
+        NodeHandle::new(self.msg_list_queue_sx.clone())
+    }
+}
+
+pub struct NodeHandle {
+    sx: Sender<MsgList>,
+}
+
+impl NodeHandle {
+    pub fn new(sx: Sender<MsgList>) -> NodeHandle {
+        NodeHandle { sx }
+    }
+
+    pub fn send(message: Vec<u8>, callback: fn()) {}
 }
