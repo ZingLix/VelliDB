@@ -2,7 +2,7 @@ use failure::Context;
 use failure::{Backtrace, Fail};
 use std::fmt::{self, Display};
 use std::sync::PoisonError;
-use surf::Error;
+
 #[derive(Debug)]
 pub struct VelliError {
     inner: Context<VelliErrorType>,

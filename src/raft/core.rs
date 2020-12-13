@@ -1,5 +1,3 @@
-use crate::Result;
-
 use super::log::LogEntry;
 use super::message::Message;
 use super::rpc::*;
@@ -22,7 +20,7 @@ pub struct NodeCore {
     voted_for: Option<u64>,
     log: Vec<LogEntry>,
     commit_index: usize,
-    last_applied: u64,
+    last_applied: usize,
     next_index: HashMap<u64, usize>,
     match_index: HashMap<u64, usize>,
     vote_count: usize,
@@ -51,7 +49,7 @@ impl NodeCore {
 
     pub fn recv_append_entries_rpc(&mut self, request: AppendEntriesRPC) -> AppendEntriesReply {
         info!(
-            "Node {}: received AppendEntriesRPC from Node {}.",
+            "Node {} received AppendEntriesRPC from Node {}.",
             self.id, request.leader_id
         );
         // If RPC request or response contains term T > currentTerm:
@@ -112,7 +110,7 @@ impl NodeCore {
 
     pub fn recv_request_vote_rpc(&mut self, request: RequestVoteRPC) -> RequestVoteReply {
         info!(
-            "Node {}: received RequestVoteRPC from Node {}.",
+            "Node {} received RequestVoteRPC from Node {}.",
             self.id, request.candidate_id
         );
         // If RPC request or response contains term T > currentTerm:
@@ -295,6 +293,7 @@ impl NodeCore {
         self.state = State::Candidate;
         self.current_term += 1;
         self.voted_for = Some(self.id);
+        self.heartbeat_elapsed = 0;
         self.send_request_vote_rpc()
     }
 
@@ -319,10 +318,12 @@ impl NodeCore {
     }
 
     pub fn tick(&mut self) -> MsgList {
-        match self.state {
+        let mut list = match self.state {
             State::Follower | State::Candidate => self.tick_election(),
             State::Leader => self.send_append_entries_rpc(),
-        }
+        };
+        list.append(&mut self.commit());
+        list
     }
 
     fn random_election_timer() -> usize {
@@ -332,11 +333,15 @@ impl NodeCore {
     fn tick_election(&mut self) -> MsgList {
         self.heartbeat_elapsed += 1;
         if self.heartbeat_elapsed > self.election_elapsed {
-            info!(
-                "heartbeat {}, election {}",
-                self.heartbeat_elapsed, self.election_elapsed
-            );
             return self.convert_to_candidate();
+        }
+        vec![]
+    }
+
+    fn commit(&mut self) -> MsgList {
+        while self.commit_index > self.last_applied {
+            // TODO: apply log[last_applied]
+            self.last_applied += 1;
         }
         vec![]
     }

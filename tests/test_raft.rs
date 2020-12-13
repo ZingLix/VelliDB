@@ -1,10 +1,6 @@
-#[macro_use]
 extern crate log;
-use log::LevelFilter;
 
-use async_std::sync::Mutex;
 use async_std::task;
-use std::sync::Arc;
 use tempfile::TempDir;
 use velli_db::{raft::NodeInfo, Node, Result};
 

@@ -6,13 +6,13 @@ use crate::Result;
 use crate::{storage::LocalStorage, VelliErrorType};
 use async_std::channel::{unbounded, Receiver, Sender};
 use async_std::prelude::*;
-use async_std::stream::{self, Interval};
+use async_std::stream;
 use async_std::sync::{Arc, Mutex};
 use async_std::task;
 use core::panic;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use surf;
 use tide::{Request, Response, StatusCode};
 
@@ -31,7 +31,8 @@ impl NodeInfo {
 pub struct Node {
     self_info: NodeInfo,
     other_nodes: HashMap<u64, String>,
-    //storage: LocalStorage,
+    #[allow(dead_code)]
+    storage: Arc<Mutex<LocalStorage>>,
     server: Option<tide::Server<Arc<Mutex<NodeCore>>>>,
     node: Arc<Mutex<NodeCore>>,
     msg_list_queue_rx: Receiver<MsgList>,
@@ -69,7 +70,7 @@ impl Node {
                 .iter()
                 .map(|x| (x.id, x.address.clone()))
                 .collect(),
-            // storage: LocalStorage::new(path).unwrap(),
+            storage: Arc::new(Mutex::new(LocalStorage::new(path).unwrap())),
             server: Some(tide::with_state(node.clone())),
             node,
             msg_list_queue_rx: rx,
@@ -117,7 +118,7 @@ impl Node {
                 while let Some(_) = interval.next().await {
                     let mut guard = node.lock().await;
                     let msg_list = guard.tick();
-                    sx.send(msg_list).await;
+                    sx.send(msg_list).await.unwrap();
                     //info!("tick");
                 }
             }
@@ -189,7 +190,6 @@ impl Node {
                 Err(_) => return Err(VelliErrorType::RecvError)?,
             }
         }
-        Ok(())
     }
 
     async fn deal_msg(&mut self, msg: Message) -> Result<()> {
@@ -208,23 +208,23 @@ impl Node {
                 let mut guard = self.node.lock().await;
                 Ok(guard.recv_request_vote_reply(id, request, reply))
             }
-            _ => Err(VelliErrorType::InvalidArguments)?,
         }
     }
 
-    pub fn handle(&self) -> NodeHandle {
-        NodeHandle::new(self.msg_list_queue_sx.clone())
-    }
+    // pub fn handle(&self) -> NodeHandle {
+    //     NodeHandle::new(self.msg_list_queue_sx.clone())
+    // }
 }
 
-pub struct NodeHandle {
-    sx: Sender<MsgList>,
-}
+// TODO: Handle for users to pass message into raft node
+// pub struct NodeHandle {
+//     sx: Sender<MsgList>,
+// }
 
-impl NodeHandle {
-    pub fn new(sx: Sender<MsgList>) -> NodeHandle {
-        NodeHandle { sx }
-    }
+// impl NodeHandle {
+//     pub fn new(sx: Sender<MsgList>) -> NodeHandle {
+//         NodeHandle { sx }
+//     }
 
-    pub fn send(message: Vec<u8>, callback: fn()) {}
-}
+//     pub fn send(message: Vec<u8>, callback: fn()) {}
+// }
