@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 use surf;
 use tide::{Request, Response, StatusCode};
 
+#[derive(Clone)]
 pub struct NodeInfo {
     id: u64,
     address: String,
@@ -30,7 +31,7 @@ impl NodeInfo {
 pub struct Node {
     self_info: NodeInfo,
     other_nodes: HashMap<u64, String>,
-    storage: LocalStorage,
+    //storage: LocalStorage,
     server: Option<tide::Server<Arc<Mutex<NodeCore>>>>,
     node: Arc<Mutex<NodeCore>>,
     msg_list_queue_rx: Receiver<MsgList>,
@@ -68,7 +69,7 @@ impl Node {
                 .iter()
                 .map(|x| (x.id, x.address.clone()))
                 .collect(),
-            storage: LocalStorage::new(path).unwrap(),
+            // storage: LocalStorage::new(path).unwrap(),
             server: Some(tide::with_state(node.clone())),
             node,
             msg_list_queue_rx: rx,
@@ -109,7 +110,7 @@ impl Node {
         let node = self.node.clone();
         let sx = self.msg_list_queue_sx.clone();
         task::spawn(async move {
-            let tick_timeout = Duration::from_millis(100);
+            let tick_timeout = Duration::from_millis(300);
             let mut interval = stream::interval(tick_timeout);
 
             loop {
@@ -117,7 +118,7 @@ impl Node {
                     let mut guard = node.lock().await;
                     let msg_list = guard.tick();
                     sx.send(msg_list).await;
-                    info!("tick");
+                    //info!("tick");
                 }
             }
         });
@@ -142,8 +143,14 @@ impl Node {
             Err(VelliErrorType::ConnectionError)?
         }
         let reply: AppendEntriesReply = response.body_json().await?;
-        let mut guard = self.node.lock().await;
-        guard.recv_append_entries_reply(target_id, request, reply);
+        self.msg_list_queue_sx
+            .send(vec![Message::RecvAppendEntriesReply {
+                id: target_id,
+                request,
+                reply,
+            }])
+            .await?;
+
         Ok(())
     }
 
@@ -160,9 +167,13 @@ impl Node {
             Err(VelliErrorType::ConnectionError)?
         }
         let reply: RequestVoteReply = response.body_json().await?;
-
-        let mut guard = self.node.lock().await;
-        guard.recv_request_vote_reply(reply);
+        self.msg_list_queue_sx
+            .send(vec![Message::RecvRequestVoteReply {
+                id: target_id,
+                request,
+                reply,
+            }])
+            .await?;
 
         Ok(())
     }
@@ -188,6 +199,14 @@ impl Node {
             }
             Message::SendRequestVoteRPC { id, request } => {
                 Ok(self.send_request_vote_rpc(id, request).await?)
+            }
+            Message::RecvAppendEntriesReply { id, request, reply } => {
+                let mut guard = self.node.lock().await;
+                Ok(guard.recv_append_entries_reply(id, request, reply))
+            }
+            Message::RecvRequestVoteReply { id, request, reply } => {
+                let mut guard = self.node.lock().await;
+                Ok(guard.recv_request_vote_reply(id, request, reply))
             }
             _ => Err(VelliErrorType::InvalidArguments)?,
         }

@@ -93,8 +93,20 @@ impl From<std::sync::mpsc::RecvError> for VelliError {
     }
 }
 
+impl From<async_std::channel::RecvError> for VelliError {
+    fn from(_: async_std::channel::RecvError) -> Self {
+        VelliErrorType::RecvError.into()
+    }
+}
+
 impl<T> From<std::sync::mpsc::SendError<T>> for VelliError {
     fn from(_: std::sync::mpsc::SendError<T>) -> Self {
+        VelliErrorType::SendError.into()
+    }
+}
+
+impl<T> From<async_std::channel::SendError<T>> for VelliError {
+    fn from(_: async_std::channel::SendError<T>) -> Self {
         VelliErrorType::SendError.into()
     }
 }

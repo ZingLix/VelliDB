@@ -3,8 +3,8 @@ use crate::Result;
 use super::log::LogEntry;
 use super::message::Message;
 use super::rpc::*;
+use rand::prelude::*;
 use std::collections::HashMap;
-
 pub type MsgList = Vec<Message>;
 
 #[derive(Debug, PartialEq)]
@@ -44,24 +44,30 @@ impl NodeCore {
             next_index: HashMap::new(),
             match_index: HashMap::new(),
             vote_count: 0,
-            election_elapsed: 0,
+            election_elapsed: Self::random_election_timer(),
             heartbeat_elapsed: 0,
         }
     }
 
     pub fn recv_append_entries_rpc(&mut self, request: AppendEntriesRPC) -> AppendEntriesReply {
+        info!(
+            "Node {}: received AppendEntriesRPC from Node {}.",
+            self.id, request.leader_id
+        );
         // If RPC request or response contains term T > currentTerm:
         // set currentTerm = T, convert to follower (§5.1)
         if request.term > self.current_term {
             self.apply_new_term(request.term);
+            if self.state == State::Candidate {
+                self.convert_to_follower();
+            }
         }
-        if self.state == State::Candidate {
-            self.convert_to_follower();
-        }
+
         let mut reply = AppendEntriesReply {
             term: self.current_term,
             success: false,
         };
+        self.heartbeat_elapsed = 0;
         // Reply false if term < currentTerm (§5.1)
         if request.term < self.current_term {
             return reply;
@@ -92,14 +98,23 @@ impl NodeCore {
             }
         }
         if request.leader_commit > self.commit_index {
-            self.commit_index =
-                std::cmp::min(request.leader_commit, self.log.last().unwrap().index);
+            self.commit_index = std::cmp::min(
+                request.leader_commit,
+                self.log
+                    .last()
+                    .unwrap_or(&LogEntry { index: 0, term: 0 })
+                    .index,
+            );
         }
         reply.success = true;
         reply
     }
 
     pub fn recv_request_vote_rpc(&mut self, request: RequestVoteRPC) -> RequestVoteReply {
+        info!(
+            "Node {}: received RequestVoteRPC from Node {}.",
+            self.id, request.candidate_id
+        );
         // If RPC request or response contains term T > currentTerm:
         // set currentTerm = T, convert to follower (§5.1)
         if request.term > self.current_term {
@@ -112,39 +127,56 @@ impl NodeCore {
         };
         // Reply false if term < currentTerm (§5.1)
         if request.term < self.current_term {
+            info!("Node {} refused RequestVoteRPC from node {} on term {} because candidate's term is low.",self.id, request.candidate_id, request.term);
             return reply;
         }
         // If votedFor is null or candidateId, and candidate’s log is at
         // least as up-to-date as receiver’s log, grant vote (§5.2, §5.4)
-        let last_log = self.log.last().unwrap();
         if self.log.len() == 0
-            || request.last_log_term > last_log.term
-            || (request.last_log_term == last_log.term && request.last_log_index >= last_log.index)
+            || request.last_log_term > self.log.last().unwrap().term
+            || (request.last_log_term == self.log.last().unwrap().term
+                && request.last_log_index >= self.log.last().unwrap().index)
         {
             match self.voted_for {
                 None => {
+                    info!(
+                        "Node {} granted RequestVoteRPC from node {} on term {}.",
+                        self.id, request.candidate_id, request.term
+                    );
                     reply.vote_granted = true;
                     self.voted_for = Some(request.candidate_id);
                 }
                 Some(id) if id == request.candidate_id => {
+                    info!(
+                        "Node {} granted RequestVoteRPC from node {} on term {}.",
+                        self.id, request.candidate_id, request.term
+                    );
                     reply.vote_granted = true;
                 }
-                Some(_) => {
+                Some(id) => {
+                    info!("Node {} refused RequestVoteRPC from node {} on term {} because have voted for node {}.",self.id, request.candidate_id, request.term,id);
                     return reply;
                 }
             }
-        } else {
-            return reply;
         }
         reply
     }
 
-    pub fn recv_request_vote_reply(&mut self, reply: RequestVoteReply) {
+    pub fn recv_request_vote_reply(
+        &mut self,
+        id: u64,
+        _request: RequestVoteRPC,
+        reply: RequestVoteReply,
+    ) {
         if reply.term == self.current_term
-            && self.state == State::Leader
+            && self.state == State::Candidate
             && reply.vote_granted == true
         {
             self.vote_count += 1;
+            info!(
+                "Node {} received vote from {}, vote count for term {}: {}",
+                self.id, id, self.current_term, self.vote_count,
+            );
             if self.vote_count > self.node_list.len() / 2 {
                 self.convert_to_leader();
             }
@@ -183,7 +215,11 @@ impl NodeCore {
     pub fn send_request_vote_rpc(&mut self) -> MsgList {
         self.vote_count = 1;
         let mut list = vec![];
+        self.voted_for = Some(self.id);
         for node in &self.node_list {
+            if node == &self.id {
+                continue;
+            }
             let mut request = RequestVoteRPC {
                 term: self.current_term,
                 candidate_id: self.id,
@@ -208,6 +244,9 @@ impl NodeCore {
     pub fn send_append_entries_rpc(&mut self) -> MsgList {
         let mut list = vec![];
         for node in &self.node_list {
+            if node == &self.id {
+                continue;
+            }
             let mut request = AppendEntriesRPC {
                 term: self.current_term,
                 leader_id: self.id,
@@ -241,10 +280,18 @@ impl NodeCore {
     }
 
     fn convert_to_follower(&mut self) {
+        if self.state != State::Follower {
+            info!("Node {} converts to follower.", self.id);
+        }
         self.state = State::Follower;
+        self.heartbeat_elapsed = 0;
     }
 
     fn convert_to_candidate(&mut self) -> MsgList {
+        info!("Node {} converts to candidate.", self.id);
+        if self.state == State::Candidate {
+            self.election_elapsed = Self::random_election_timer();
+        }
         self.state = State::Candidate;
         self.current_term += 1;
         self.voted_for = Some(self.id);
@@ -265,13 +312,10 @@ impl NodeCore {
     }
 
     fn convert_to_leader(&mut self) {
+        info!("Node {} converts to leader.", self.id);
         self.state = State::Leader;
         self.init_leader_state();
         self.send_append_entries_rpc();
-    }
-
-    fn election_timeout() -> usize {
-        4
     }
 
     pub fn tick(&mut self) -> MsgList {
@@ -281,9 +325,17 @@ impl NodeCore {
         }
     }
 
+    fn random_election_timer() -> usize {
+        rand::thread_rng().gen_range(2, 6)
+    }
+
     fn tick_election(&mut self) -> MsgList {
         self.heartbeat_elapsed += 1;
-        if self.heartbeat_elapsed > Self::election_timeout() {
+        if self.heartbeat_elapsed > self.election_elapsed {
+            info!(
+                "heartbeat {}, election {}",
+                self.heartbeat_elapsed, self.election_elapsed
+            );
             return self.convert_to_candidate();
         }
         vec![]
