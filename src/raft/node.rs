@@ -4,10 +4,12 @@ use super::options;
 use super::rpc::*;
 use crate::Result;
 use crate::{storage::LocalStorage, VelliErrorType};
+use async_std::channel::{unbounded, Receiver, Sender};
 use async_std::prelude::*;
 use async_std::stream::{self, Interval};
-use async_std::sync::{channel, Arc, Mutex, Receiver, Sender};
+use async_std::sync::{Arc, Mutex};
 use async_std::task;
+use core::panic;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -29,7 +31,7 @@ pub struct Node {
     self_info: NodeInfo,
     other_nodes: HashMap<u64, String>,
     storage: LocalStorage,
-    server: tide::Server<Arc<Mutex<NodeCore>>>,
+    server: Option<tide::Server<Arc<Mutex<NodeCore>>>>,
     node: Arc<Mutex<NodeCore>>,
     msg_list_queue_rx: Receiver<MsgList>,
     msg_list_queue_sx: Sender<MsgList>,
@@ -59,7 +61,7 @@ impl Node {
     pub fn new(path: PathBuf, self_info: NodeInfo, other_nodes: Vec<NodeInfo>) -> Node {
         let node = NodeCore::new(self_info.id, other_nodes.iter().map(|x| x.id).collect());
         let node = Arc::new(Mutex::new(node));
-        let (sx, rx) = channel(20);
+        let (sx, rx) = unbounded();
         Node {
             self_info,
             other_nodes: other_nodes
@@ -67,7 +69,7 @@ impl Node {
                 .map(|x| (x.id, x.address.clone()))
                 .collect(),
             storage: LocalStorage::new(path).unwrap(),
-            server: tide::with_state(node.clone()),
+            server: Some(tide::with_state(node.clone())),
             node,
             msg_list_queue_rx: rx,
             msg_list_queue_sx: sx,
@@ -75,34 +77,51 @@ impl Node {
     }
 
     fn init_server(&mut self) -> Result<()> {
-        self.server
-            .at(&options::RAFT_REQUEST_VOTE_URI)
-            .post(recv_request_vote_rpc);
-        self.server
-            .at(&options::RAFT_APPEND_ENTRIES_URI)
-            .post(recv_append_entries_rpc);
+        match self.server.as_mut() {
+            Some(server) => {
+                server
+                    .at(&options::RAFT_REQUEST_VOTE_URI)
+                    .post(recv_request_vote_rpc);
+                server
+                    .at(&options::RAFT_APPEND_ENTRIES_URI)
+                    .post(recv_append_entries_rpc);
+            }
+            None => unreachable!(),
+        }
+
         Ok(())
     }
 
     pub async fn start(mut self) -> Result<()> {
         self.init_server()?;
-        self.queue().await?;
-        self.server.listen(self.self_info.address.clone()).await?;
+
+        task::spawn(
+            self.server
+                .take()
+                .unwrap()
+                .listen(self.self_info.address.clone()),
+        );
+
         info!(
             "Node {} running on {}...",
             self.self_info.id, self.self_info.address
         );
-        let tick_timeout = Duration::from_millis(100);
-        let mut interval = stream::interval(tick_timeout);
+        let node = self.node.clone();
+        let sx = self.msg_list_queue_sx.clone();
+        task::spawn(async move {
+            let tick_timeout = Duration::from_millis(100);
+            let mut interval = stream::interval(tick_timeout);
 
-        loop {
-            while let Some(_) = interval.next().await {
-                let mut guard = self.node.lock().await;
-                let msg_list = guard.tick();
-                self.msg_list_queue_sx.send(msg_list).await;
+            loop {
+                while let Some(_) = interval.next().await {
+                    let mut guard = node.lock().await;
+                    let msg_list = guard.tick();
+                    sx.send(msg_list).await;
+                    info!("tick");
+                }
             }
-        }
-
+        });
+        self.queue().await?;
         Ok(())
     }
 
@@ -149,13 +168,15 @@ impl Node {
     }
 
     async fn queue(&mut self) -> Result<()> {
-        match self.msg_list_queue_rx.recv().await {
-            Ok(msg_list) => {
-                for msg in msg_list {
-                    self.deal_msg(msg).await?;
+        loop {
+            match self.msg_list_queue_rx.recv().await {
+                Ok(msg_list) => {
+                    for msg in msg_list {
+                        self.deal_msg(msg).await?;
+                    }
                 }
+                Err(_) => return Err(VelliErrorType::RecvError)?,
             }
-            Err(_) => return Err(VelliErrorType::RecvError)?,
         }
         Ok(())
     }

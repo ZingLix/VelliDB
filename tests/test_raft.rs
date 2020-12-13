@@ -6,8 +6,8 @@ use async_std::task;
 use tempfile::TempDir;
 use velli_db::{raft::NodeInfo, Node, Result};
 
-#[test]
-fn basic() -> Result<()> {
+#[async_std::test]
+async fn basic() -> Result<()> {
     env_logger::builder().filter_level(LevelFilter::Info).init();
     let temp_dir = TempDir::new().expect("unable to create temporary dir.");
     let node = Node::new(
@@ -15,6 +15,7 @@ fn basic() -> Result<()> {
         NodeInfo::new(1, "127.0.0.1:48880".into()),
         vec![],
     );
-    task::block_on(node.start())?;
+    node.start().await?;
+
     Ok(())
 }
