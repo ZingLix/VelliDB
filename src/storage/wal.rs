@@ -1,7 +1,9 @@
 use super::types::{InternalKey, KvPair, Value, ValueType};
 use crate::{Result, VelliErrorType};
-use std::fs::{self, File};
-use std::io::{BufReader, Read, Seek, SeekFrom, Write};
+use async_std::fs::{self, File};
+use async_std::io::{BufReader, SeekFrom};
+use async_std::prelude::*;
+use async_std::task;
 use std::path::PathBuf;
 
 pub struct WalManager {
@@ -11,12 +13,12 @@ pub struct WalManager {
 }
 
 impl WalManager {
-    pub fn new(path: &PathBuf, log_num: u64) -> WalManager {
+    pub async fn new(path: &PathBuf, log_num: u64) -> WalManager {
         let mut path = path.clone();
         path.push("wal");
         if log_num == 0 {
             // first open, wal folder does not exist
-            fs::create_dir_all(&path).unwrap();
+            fs::create_dir_all(&path).await.unwrap();
         }
         let mut file_path = path.clone();
         file_path.push(Self::log_filename(log_num));
@@ -25,6 +27,7 @@ impl WalManager {
             .write(true)
             .create(true)
             .open(file_path)
+            .await
             .unwrap();
         WalManager {
             path,
@@ -38,15 +41,15 @@ impl WalManager {
     }
 
     #[allow(dead_code)]
-    pub fn next(&mut self) -> Result<()> {
+    pub async fn next(&mut self) -> Result<()> {
         self.log_num += 1;
         let mut path = self.path.clone();
         path.push(Self::log_filename(self.log_num));
-        self.log_file = File::create(path)?;
+        self.log_file = File::create(path).await?;
         Ok(())
     }
 
-    pub fn write(&mut self, key: &InternalKey, value: &Option<Value>) -> Result<()> {
+    pub async fn write(&mut self, key: &InternalKey, value: &Option<Value>) -> Result<()> {
         let key_len = key.user_key().len() as u64;
         let mut target_str = Vec::<u8>::new();
         // key length
@@ -64,13 +67,15 @@ impl WalManager {
                 Err(VelliErrorType::InvalidArguments)?;
             }
         }
-        self.log_file.write_all(&target_str)?;
-        self.log_file.flush()?;
+        self.log_file.write_all(&target_str).await?;
+        self.log_file.flush().await?;
         Ok(())
     }
 
-    pub fn iterator(&self) -> WalIterator {
-        WalIterator::new(&self.log_file)
+    pub async fn iterator(&self) -> WalIterator {
+        let mut path = self.path.clone();
+        path.push(Self::log_filename(self.log_num));
+        WalIterator::new(&path).await
     }
 }
 
@@ -79,9 +84,14 @@ pub struct WalIterator {
 }
 
 impl WalIterator {
-    pub fn new(log_file: &File) -> WalIterator {
-        let mut log_file = BufReader::new(log_file.try_clone().unwrap());
-        log_file.seek(SeekFrom::Start(0)).unwrap();
+    pub async fn new(log_file_path: &PathBuf) -> WalIterator {
+        let f = fs::OpenOptions::new()
+            .read(true)
+            .open(log_file_path)
+            .await
+            .unwrap();
+        let mut log_file = BufReader::new(f);
+        log_file.seek(SeekFrom::Start(0)).await.unwrap();
         WalIterator { log_file }
     }
 }
@@ -91,29 +101,30 @@ impl Iterator for WalIterator {
 
     fn next(&mut self) -> Option<Self::Item> {
         let mut buf: [u8; 8] = [0u8; 8];
-        match self.log_file.read_exact(&mut buf) {
+        match task::block_on(self.log_file.read_exact(&mut buf)) {
             Ok(size) => size,
             Err(_) => {
                 return None;
             }
         };
-
+        //info("size ", size);
         // user key length
         let key_len = u64::from_le_bytes(buf.clone());
         let mut key_bytes = vec![0; key_len as usize + InternalKey::len_without_key()];
         // read key
-        self.log_file.read_exact(&mut key_bytes).unwrap();
+        task::block_on(self.log_file.read_exact(&mut key_bytes)).unwrap();
+
         let key = InternalKey::decode(&key_bytes).expect("Decode WAL log key failed.");
 
         if key.value_type() == ValueType::Deletion {
             return Some((key, None));
         }
         // read value length
-        self.log_file.read_exact(&mut buf).unwrap();
+        task::block_on(self.log_file.read_exact(&mut buf)).unwrap();
         let value_len = u64::from_le_bytes(buf);
         let mut value = vec![0; value_len as usize];
         // read value
-        self.log_file.read_exact(&mut value).unwrap();
+        task::block_on(self.log_file.read_exact(&mut value)).unwrap();
         Some((key, Some(value)))
     }
 }

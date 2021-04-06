@@ -4,11 +4,14 @@ use super::options;
 use super::rpc::*;
 use crate::Result;
 use crate::{storage::LocalStorage, VelliErrorType};
-use async_std::channel::{unbounded, Receiver, Sender};
 use async_std::prelude::*;
 use async_std::stream;
 use async_std::sync::{Arc, Mutex};
 use async_std::task;
+use async_std::{
+    channel::{unbounded, Receiver, Sender},
+    task::block_on,
+};
 use core::panic;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -70,7 +73,7 @@ impl Node {
                 .iter()
                 .map(|x| (x.id, x.address.clone()))
                 .collect(),
-            storage: Arc::new(Mutex::new(LocalStorage::new(path).unwrap())),
+            storage: Arc::new(Mutex::new(block_on(LocalStorage::new(path)).unwrap())),
             server: Some(tide::with_state(node.clone())),
             node,
             msg_list_queue_rx: rx,
