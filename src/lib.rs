@@ -5,4 +5,3 @@ pub use util::error::{Result, VelliError, VelliErrorType};
 pub mod storage;
 pub use storage::LocalStorage;
 pub mod raft;
-pub use raft::{Node, NodeInfo};

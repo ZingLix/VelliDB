@@ -1,7 +1,10 @@
-use super::core::{MsgList, NodeCore};
-use super::message::Message;
+use super::message::{Message, MsgList};
 use super::options;
 use super::rpc::*;
+use super::{
+    core::{NodeCore, RaftState},
+    result::RaftProposeResult,
+};
 use crate::Result;
 use crate::{storage::LocalStorage, VelliErrorType};
 use async_std::prelude::*;
@@ -9,10 +12,9 @@ use async_std::stream;
 use async_std::sync::{Arc, Mutex};
 use async_std::task;
 use async_std::{
-    channel::{unbounded, Receiver, Sender},
+    channel::{bounded, unbounded, Receiver, Sender},
     task::block_on,
 };
-use core::panic;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -31,10 +33,9 @@ impl NodeInfo {
     }
 }
 
-pub struct Node {
+pub struct RaftNodeImpl {
     self_info: NodeInfo,
     other_nodes: HashMap<u64, String>,
-    #[allow(dead_code)]
     storage: Arc<Mutex<LocalStorage>>,
     server: Option<tide::Server<Arc<Mutex<NodeCore>>>>,
     node: Arc<Mutex<NodeCore>>,
@@ -62,12 +63,12 @@ async fn recv_append_entries_rpc(mut req: Request<Arc<Mutex<NodeCore>>>) -> tide
     Ok(response)
 }
 
-impl Node {
-    pub fn new(path: PathBuf, self_info: NodeInfo, other_nodes: Vec<NodeInfo>) -> Node {
+impl RaftNodeImpl {
+    pub fn new(path: PathBuf, self_info: NodeInfo, other_nodes: Vec<NodeInfo>) -> RaftNodeImpl {
         let node = NodeCore::new(self_info.id, other_nodes.iter().map(|x| x.id).collect());
         let node = Arc::new(Mutex::new(node));
         let (sx, rx) = unbounded();
-        Node {
+        RaftNodeImpl {
             self_info,
             other_nodes: other_nodes
                 .iter()
@@ -211,23 +212,58 @@ impl Node {
                 let mut guard = self.node.lock().await;
                 Ok(guard.recv_request_vote_reply(id, request, reply))
             }
+            Message::ProposeRequest { content, callback } => {
+                // Todo
+                Ok(())
+            }
         }
     }
 
-    // pub fn handle(&self) -> NodeHandle {
-    //     NodeHandle::new(self.msg_list_queue_sx.clone())
-    // }
+    pub(crate) fn sender(&self) -> Sender<MsgList> {
+        self.msg_list_queue_sx.clone()
+    }
+
+    pub(crate) fn core(&self) -> Arc<Mutex<NodeCore>> {
+        Arc::clone(&self.node)
+    }
+
+    pub async fn state(&self) -> RaftState {
+        let guard = self.node.lock().await;
+        guard.state()
+    }
 }
 
-// TODO: Handle for users to pass message into raft node
-// pub struct NodeHandle {
-//     sx: Sender<MsgList>,
-// }
+#[derive(Clone)]
+pub struct RaftNodeHandle {
+    sx: Sender<MsgList>,
+    core: Arc<Mutex<NodeCore>>,
+}
 
-// impl NodeHandle {
-//     pub fn new(sx: Sender<MsgList>) -> NodeHandle {
-//         NodeHandle { sx }
-//     }
+impl RaftNodeHandle {
+    pub fn new(node: &RaftNodeImpl) -> RaftNodeHandle {
+        RaftNodeHandle {
+            sx: node.sender(),
+            core: node.core(),
+        }
+    }
 
-//     pub fn send(message: Vec<u8>, callback: fn()) {}
-// }
+    pub async fn propose(&self, message: Vec<u8>) -> Result<RaftProposeResult> {
+        let (sx, rx) = bounded(1);
+        self.sx
+            .send(vec![Message::ProposeRequest {
+                content: message,
+                callback: Box::new(move |result| match block_on(sx.send(result)) {
+                    Ok(()) => Ok(()),
+                    Err(e) => Err(e)?,
+                }),
+            }])
+            .await?;
+        let result = rx.recv().await?;
+        Ok(result)
+    }
+
+    pub async fn state(&self) -> Result<RaftState> {
+        let guard = self.core.lock().await;
+        Ok(guard.state())
+    }
+}

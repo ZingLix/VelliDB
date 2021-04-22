@@ -1,12 +1,11 @@
 use super::log::LogEntry;
-use super::message::Message;
+use super::message::{Message, MsgList};
 use super::rpc::*;
 use rand::prelude::*;
 use std::collections::HashMap;
-pub type MsgList = Vec<Message>;
 
-#[derive(Debug, PartialEq)]
-enum State {
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum RaftState {
     Follower,
     Candidate,
     Leader,
@@ -14,7 +13,7 @@ enum State {
 
 pub struct NodeCore {
     id: u64,
-    state: State,
+    state: RaftState,
     node_list: Vec<u64>,
     current_term: u64,
     voted_for: Option<u64>,
@@ -32,7 +31,7 @@ impl NodeCore {
     pub fn new(id: u64, node_list: Vec<u64>) -> NodeCore {
         NodeCore {
             id,
-            state: State::Follower,
+            state: RaftState::Follower,
             node_list,
             current_term: 0,
             voted_for: None,
@@ -56,7 +55,7 @@ impl NodeCore {
         // set currentTerm = T, convert to follower (§5.1)
         if request.term > self.current_term {
             self.apply_new_term(request.term);
-            if self.state == State::Candidate {
+            if self.state == RaftState::Candidate {
                 self.convert_to_follower();
             }
         }
@@ -167,7 +166,7 @@ impl NodeCore {
         reply: RequestVoteReply,
     ) {
         if reply.term == self.current_term
-            && self.state == State::Candidate
+            && self.state == RaftState::Candidate
             && reply.vote_granted == true
         {
             self.vote_count += 1;
@@ -187,7 +186,7 @@ impl NodeCore {
         request: AppendEntriesRPC,
         reply: AppendEntriesReply,
     ) {
-        if self.state != State::Leader {
+        if self.state != RaftState::Leader {
             return;
         }
         if reply.success {
@@ -278,19 +277,19 @@ impl NodeCore {
     }
 
     fn convert_to_follower(&mut self) {
-        if self.state != State::Follower {
+        if self.state != RaftState::Follower {
             info!("Node {} converts to follower.", self.id);
         }
-        self.state = State::Follower;
+        self.state = RaftState::Follower;
         self.heartbeat_elapsed = 0;
     }
 
     fn convert_to_candidate(&mut self) -> MsgList {
         info!("Node {} converts to candidate.", self.id);
-        if self.state == State::Candidate {
+        if self.state == RaftState::Candidate {
             self.election_elapsed = Self::random_election_timer();
         }
-        self.state = State::Candidate;
+        self.state = RaftState::Candidate;
         self.current_term += 1;
         self.voted_for = Some(self.id);
         self.heartbeat_elapsed = 0;
@@ -312,15 +311,15 @@ impl NodeCore {
 
     fn convert_to_leader(&mut self) {
         info!("Node {} converts to leader.", self.id);
-        self.state = State::Leader;
+        self.state = RaftState::Leader;
         self.init_leader_state();
         self.send_append_entries_rpc();
     }
 
     pub fn tick(&mut self) -> MsgList {
         let mut list = match self.state {
-            State::Follower | State::Candidate => self.tick_election(),
-            State::Leader => self.send_append_entries_rpc(),
+            RaftState::Follower | RaftState::Candidate => self.tick_election(),
+            RaftState::Leader => self.send_append_entries_rpc(),
         };
         list.append(&mut self.commit());
         list
@@ -344,5 +343,9 @@ impl NodeCore {
             self.last_applied += 1;
         }
         vec![]
+    }
+
+    pub fn state(&self) -> RaftState {
+        self.state.clone()
     }
 }

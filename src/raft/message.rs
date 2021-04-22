@@ -1,6 +1,7 @@
+use super::result::RaftProposeResult;
 use super::rpc::*;
+use crate::Result;
 
-#[derive(Clone)]
 pub enum Message {
     SendRequestVoteRPC {
         id: u64,
@@ -20,4 +21,10 @@ pub enum Message {
         request: AppendEntriesRPC,
         reply: AppendEntriesReply,
     },
+    ProposeRequest {
+        content: Vec<u8>,
+        callback: Box<dyn FnMut(RaftProposeResult) -> Result<()> + Send + Sync>,
+    },
 }
+
+pub type MsgList = Vec<Message>;
