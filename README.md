@@ -1,5 +1,7 @@
 # VelliDB
 
+![build status](https://github.com/ZingLix/VelliDB/actions/workflows/build.yml/badge.svg)
+
 VelliDB will be a distributed key-value database based on Raft and Rust.
 
 This project does not aim to replace any current famous database, but to learn distributed systems like LSM-Tree, Raft, Percolator, etc. 
