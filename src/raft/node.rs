@@ -36,6 +36,7 @@ impl NodeInfo {
 pub struct RaftNodeImpl {
     self_info: NodeInfo,
     other_nodes: HashMap<u64, String>,
+    #[allow(dead_code)]
     storage: Arc<Mutex<LocalStorage>>,
     server: Option<tide::Server<Arc<Mutex<NodeCore>>>>,
     node: Arc<Mutex<NodeCore>>,
@@ -212,7 +213,10 @@ impl RaftNodeImpl {
                 let mut guard = self.node.lock().await;
                 Ok(guard.recv_request_vote_reply(id, request, reply))
             }
-            Message::ProposeRequest { content, callback } => {
+            Message::ProposeRequest {
+                content: _,
+                callback: _,
+            } => {
                 // Todo
                 Ok(())
             }
