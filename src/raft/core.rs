@@ -204,8 +204,9 @@ impl NodeCore {
                 self.commit_index += 1;
             }
         } else {
+            let index = self.next_index[&id];
             self.next_index
-                .insert(id, std::cmp::max(self.next_index[&id] - 3, 1));
+                .insert(id, if index >= 4 { index - 3 } else { 1 });
         }
     }
 
@@ -347,5 +348,17 @@ impl NodeCore {
 
     pub fn state(&self) -> RaftState {
         self.state.clone()
+    }
+
+    pub fn terms(&self) -> u64 {
+        self.current_term
+    }
+
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    pub fn node_count(&self) -> usize {
+        self.node_list.len()
     }
 }

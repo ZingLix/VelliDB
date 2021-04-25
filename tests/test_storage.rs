@@ -1,6 +1,3 @@
-#[macro_use]
-extern crate log;
-
 use tempfile::TempDir;
 use velli_db::{LocalStorage, Result};
 
@@ -94,7 +91,6 @@ async fn overwrite_value_and_restore_repeatedly() -> Result<()> {
 #[async_std::test]
 async fn massive_set() -> Result<()> {
     let temp_dir = TempDir::new().expect("unable to create temporary dir.");
-    info!("DB path: {}", temp_dir.path().to_string_lossy());
     let count = 10000;
     let mut store = LocalStorage::new(temp_dir.path().to_path_buf())
         .await
@@ -112,13 +108,10 @@ async fn massive_set() -> Result<()> {
         let val = store.get(k.as_bytes().to_vec()).await?;
         match val.clone() {
             Some(v) => {
-                let s = String::from_utf8(v.clone()).unwrap();
-
-                info!("{}:\t{}", k, s);
+                String::from_utf8(v.clone()).unwrap();
             }
             None => {
-                info!("{}: None", k);
-                panic!("{}", k);
+                panic!("Cannot find value which key is \"{}\".", k);
             }
         }
         assert_eq!(val, Some(format!("value{}", i).as_bytes().to_vec()));
@@ -132,13 +125,10 @@ async fn massive_set() -> Result<()> {
         let val = store.get(k.as_bytes().to_vec()).await?;
         match val.clone() {
             Some(v) => {
-                let s = String::from_utf8(v.clone()).unwrap();
-
-                info!("{}:\t{}", k, s);
+                String::from_utf8(v.clone()).unwrap();
             }
             None => {
-                info!("{}: None", k);
-                panic!("{}", k);
+                panic!("Cannot find value which key is \"{}\".", k);
             }
         }
         assert_eq!(val, Some(format!("value{}", i).as_bytes().to_vec()));

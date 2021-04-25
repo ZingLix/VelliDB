@@ -23,8 +23,8 @@ use tide::{Request, Response, StatusCode};
 
 #[derive(Clone)]
 pub struct NodeInfo {
-    id: u64,
-    address: String,
+    pub id: u64,
+    pub address: String,
 }
 
 impl NodeInfo {
@@ -189,10 +189,16 @@ impl RaftNodeImpl {
             match self.msg_list_queue_rx.recv().await {
                 Ok(msg_list) => {
                     for msg in msg_list {
-                        self.deal_msg(msg).await?;
+                        match self.deal_msg(msg).await {
+                            Ok(()) => {}
+                            Err(e) => warn!("Error {} encoutered when dealing message.", e),
+                        };
                     }
                 }
-                Err(_) => return Err(VelliErrorType::RecvError)?,
+                Err(_) => {
+                    warn!("Node {} error: rx exited.", self.self_info.id);
+                    return Err(VelliErrorType::RecvError)?;
+                }
             }
         }
     }
@@ -218,6 +224,13 @@ impl RaftNodeImpl {
                 callback: _,
             } => {
                 // Todo
+                Ok(())
+            }
+            Message::UpdateNodeInfo { node_info_list } => {
+                self.other_nodes = node_info_list
+                    .into_iter()
+                    .map(|n| (n.id, n.address))
+                    .collect();
                 Ok(())
             }
         }
@@ -266,8 +279,30 @@ impl RaftNodeHandle {
         Ok(result)
     }
 
-    pub async fn state(&self) -> Result<RaftState> {
+    pub async fn state(&self) -> RaftState {
         let guard = self.core.lock().await;
-        Ok(guard.state())
+        guard.state()
+    }
+
+    pub async fn terms(&self) -> u64 {
+        let guard = self.core.lock().await;
+        guard.terms()
+    }
+
+    pub async fn id(&self) -> u64 {
+        let guard = self.core.lock().await;
+        guard.id()
+    }
+
+    pub async fn set_node_info_list(&self, node_info_list: Vec<NodeInfo>) -> Result<()> {
+        self.sx
+            .send(vec![Message::UpdateNodeInfo { node_info_list }])
+            .await?;
+        Ok(())
+    }
+
+    pub async fn node_count(&self) -> usize {
+        let guard = self.core.lock().await;
+        guard.node_count()
     }
 }
