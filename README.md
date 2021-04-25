@@ -1,6 +1,6 @@
 # VelliDB
 
-![build status](https://github.com/ZingLix/VelliDB/actions/workflows/build.yml/badge.svg)
+![build status](https://github.com/ZingLix/VelliDB/actions/workflows/build.yml/badge.svg) ![test status](https://github.com/ZingLix/VelliDB/actions/workflows/test.yml/badge.svg)
 
 VelliDB will be a distributed key-value database based on Raft and Rust.
 
