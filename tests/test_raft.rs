@@ -229,13 +229,14 @@ async fn basic_agree() -> Result<()> {
 
     let term = node_list[0].terms().await;
 
-    for node in &node_list {
+    for i in 0..node_list.len() {
+        let node = &node_list[i];
         match node.propose(node.id().await.to_string().into_bytes()).await {
             Ok(r) => match r {
                 RaftProposeResult::Success(entry) => {
                     info!("Log {}:{} proposed.", entry.term, entry.index);
                     assert_eq!(entry.term, term);
-                    assert_eq!(entry.index, 1);
+                    assert_eq!(entry.index, i + 1);
                 }
                 RaftProposeResult::CurrentNoLeader => {
                     panic!("Leader should be elected.");
