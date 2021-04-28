@@ -4,7 +4,7 @@ use proxy::{ProxyMode, ProxyServer};
 use std::{collections::HashSet, time::Duration};
 use tempfile::TempDir;
 use velli_db::{
-    raft::{NodeInfo, RaftNodeHandle, RaftNodeImpl, RaftState},
+    raft::{NodeInfo, RaftNodeHandle, RaftNodeImpl, RaftProposeResult, RaftState},
     Result,
 };
 
@@ -212,5 +212,38 @@ async fn re_election() -> Result<()> {
     wait(Duration::from_secs(1));
     check_one_leader(&node_list);
 
+    Ok(())
+}
+
+#[macro_use]
+extern crate log;
+#[async_std::test]
+async fn basic_agree() -> Result<()> {
+    env_logger::Builder::new()
+        .parse_filters("warn,velli_db=info")
+        .init();
+    const TEST_NO: u32 = 2;
+    let (node_list, _) = prepare_node(3, TEST_NO);
+
+    check_one_leader(&node_list);
+
+    let term = node_list[0].terms().await;
+
+    for node in &node_list {
+        match node.propose(node.id().await.to_string().into_bytes()).await {
+            Ok(r) => match r {
+                RaftProposeResult::Success(entry) => {
+                    info!("Log {}:{} proposed.", entry.term, entry.index);
+                    assert_eq!(entry.term, term);
+                    assert_eq!(entry.index, 1);
+                }
+                RaftProposeResult::CurrentNoLeader => {
+                    panic!("Leader should be elected.");
+                }
+            },
+            Err(e) => panic!("{}", e),
+        };
+    }
+    sleep(Duration::from_secs(5)).await;
     Ok(())
 }

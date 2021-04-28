@@ -79,10 +79,17 @@ impl Proxy {
                         }
                     });
                     loop {
-                        let n = stream.read(&mut buffer).unwrap();
-                        if n == 0 {
-                            break;
-                        }
+                        let n = match stream.read(&mut buffer) {
+                            Ok(n) => {
+                                if n == 0 {
+                                    break;
+                                } else {
+                                    n
+                                }
+                            }
+                            Err(_) => break,
+                        };
+
                         let m;
                         {
                             m = mode.read().unwrap().clone();
@@ -90,9 +97,15 @@ impl Proxy {
                         match m {
                             ProxyMode::Normal => {}
                             ProxyMode::Delay(d) => sleep(d),
-                            ProxyMode::Disconnect => stream.shutdown(Shutdown::Both).unwrap(),
+                            ProxyMode::Disconnect => match stream.shutdown(Shutdown::Both) {
+                                Ok(()) => {}
+                                Err(_) => break,
+                            },
                         }
-                        conn.write(&buffer[0..n]).unwrap();
+                        match conn.write(&buffer[0..n]) {
+                            Ok(_) => {}
+                            Err(_) => break,
+                        }
                     }
                 });
             }
