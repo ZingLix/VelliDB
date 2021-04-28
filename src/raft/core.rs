@@ -49,9 +49,10 @@ impl NodeCore {
     }
 
     pub fn recv_append_entries_rpc(&mut self, request: AppendEntriesRPC) -> AppendEntriesReply {
-        info!(
+        trace!(
             "Node {} received AppendEntriesRPC from Node {}.",
-            self.id, request.leader_id
+            self.id,
+            request.leader_id
         );
         // If RPC request or response contains term T > currentTerm:
         // set currentTerm = T, convert to follower (§5.1)
@@ -286,7 +287,7 @@ impl NodeCore {
 
     fn next_log_index(&self) -> usize {
         match self.log.last() {
-            Some(log) => log.index,
+            Some(log) => log.index + 1,
             None => 1,
         }
     }

@@ -214,10 +214,6 @@ impl RaftNodeImpl {
             Err(VelliErrorType::ConnectionError)?
         }
         let reply: ProposeReply = response.body_json().await?;
-        info!(
-            "recv propose reply: {}",
-            serde_json::to_string(&reply).unwrap()
-        );
         Ok(reply)
     }
 
