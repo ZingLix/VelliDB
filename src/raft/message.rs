@@ -1,6 +1,5 @@
 use super::rpc::*;
 use super::{result::RaftProposeResult, NodeInfo};
-use crate::Result;
 
 pub enum Message {
     SendRequestVoteRPC {
@@ -23,7 +22,7 @@ pub enum Message {
     },
     ProposeRequest {
         content: Vec<u8>,
-        callback: Box<dyn FnMut(RaftProposeResult) -> Result<()> + Send + Sync>,
+        callback: Box<dyn FnMut(RaftProposeResult) -> () + Send + Sync>,
     },
     UpdateNodeInfo {
         node_info_list: Vec<NodeInfo>,

@@ -30,3 +30,13 @@ pub struct RequestVoteReply {
     pub term: u64,
     pub vote_granted: bool,
 }
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ProposeRequest {
+    pub content: Vec<u8>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ProposeReply {
+    pub index: Option<LogEntry>,
+}

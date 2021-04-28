@@ -25,6 +25,7 @@ pub struct NodeCore {
     vote_count: usize,
     election_elapsed: usize,
     heartbeat_elapsed: usize,
+    current_leader_id: Option<u64>,
 }
 
 impl NodeCore {
@@ -43,6 +44,7 @@ impl NodeCore {
             vote_count: 0,
             election_elapsed: Self::random_election_timer(),
             heartbeat_elapsed: 0,
+            current_leader_id: None,
         }
     }
 
@@ -54,7 +56,7 @@ impl NodeCore {
         // If RPC request or response contains term T > currentTerm:
         // set currentTerm = T, convert to follower (§5.1)
         if request.term > self.current_term {
-            self.apply_new_term(request.term);
+            self.apply_new_term(request.term, Some(request.leader_id));
             if self.state == RaftState::Candidate {
                 self.convert_to_follower();
             }
@@ -69,6 +71,7 @@ impl NodeCore {
         if request.term < self.current_term {
             return reply;
         }
+        self.current_leader_id = Some(request.leader_id);
         // Reply false if log doesn’t contain an entry at prevLogIndex
         // whose term matches prevLogTerm (§5.3)
         if self.log.len() < request.prev_log_index
@@ -99,7 +102,11 @@ impl NodeCore {
                 request.leader_commit,
                 self.log
                     .last()
-                    .unwrap_or(&LogEntry { index: 0, term: 0 })
+                    .unwrap_or(&LogEntry {
+                        index: 0,
+                        term: 0,
+                        content: None,
+                    })
                     .index,
             );
         }
@@ -115,7 +122,7 @@ impl NodeCore {
         // If RPC request or response contains term T > currentTerm:
         // set currentTerm = T, convert to follower (§5.1)
         if request.term > self.current_term {
-            self.apply_new_term(request.term);
+            self.apply_new_term(request.term, None);
         }
 
         let mut reply = RequestVoteReply {
@@ -224,7 +231,11 @@ impl NodeCore {
                 last_log_index: self
                     .log
                     .last()
-                    .unwrap_or(&LogEntry { term: 0, index: 0 })
+                    .unwrap_or(&LogEntry {
+                        term: 0,
+                        index: 0,
+                        content: None,
+                    })
                     .index,
                 last_log_term: 0,
             };
@@ -255,13 +266,15 @@ impl NodeCore {
             };
             let next_index = self.next_index[&node] - 1;
             if self.log.len() > 0 {
-                request.prev_log_index = next_index - 1;
-                if self.log.len() > 1 && next_index > 1 {
-                    request.prev_log_term = self.log[request.prev_log_index - 1].term
+                if next_index > 1 {
+                    request.prev_log_index = next_index - 1;
+                    request.entries[..self.log.len() - request.prev_log_index]
+                        .clone_from_slice(&self.log[request.prev_log_index..]);
                 }
-                request
-                    .entries
-                    .clone_from_slice(&self.log[next_index - 1..]);
+
+                if self.log.len() > 1 && next_index > 1 {
+                    request.prev_log_term = self.log[request.prev_log_index - 1].term;
+                }
             }
             list.push(Message::SendAppendEntriesRPC {
                 id: node.clone(),
@@ -271,8 +284,37 @@ impl NodeCore {
         list
     }
 
-    fn apply_new_term(&mut self, new_term: u64) {
+    fn next_log_index(&self) -> usize {
+        match self.log.last() {
+            Some(log) => log.index,
+            None => 1,
+        }
+    }
+
+    pub fn append_log(&mut self, content: Vec<u8>) -> LogEntry {
+        let entry = LogEntry {
+            index: self.next_log_index(),
+            term: self.current_term,
+            content: Some(content),
+        };
+        self.log.push(entry.clone());
+        entry
+    }
+
+    fn apply_new_term(&mut self, new_term: u64, leader_id: Option<u64>) {
+        match leader_id {
+            Some(id) => info!(
+                "Node {} comes to term {} which leader is {}.",
+                self.id, new_term, id
+            ),
+            None => info!(
+                "Node {} comes to term {} with no leader.",
+                self.id, new_term
+            ),
+        }
+
         self.current_term = new_term;
+        self.current_leader_id = leader_id;
         self.voted_for = None;
         self.convert_to_follower();
     }
@@ -313,6 +355,7 @@ impl NodeCore {
     fn convert_to_leader(&mut self) {
         info!("Node {} converts to leader.", self.id);
         self.state = RaftState::Leader;
+        self.current_leader_id = Some(self.id);
         self.init_leader_state();
         self.send_append_entries_rpc();
     }
@@ -340,6 +383,7 @@ impl NodeCore {
 
     fn commit(&mut self) -> MsgList {
         while self.commit_index > self.last_applied {
+            warn!("Node {}: {} applied.", self.id, self.last_applied);
             // TODO: apply log[last_applied]
             self.last_applied += 1;
         }
@@ -356,6 +400,10 @@ impl NodeCore {
 
     pub fn id(&self) -> u64 {
         self.id
+    }
+
+    pub fn leader_id(&self) -> Option<u64> {
+        self.current_leader_id
     }
 
     pub fn node_count(&self) -> usize {

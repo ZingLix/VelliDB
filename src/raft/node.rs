@@ -1,9 +1,9 @@
-use super::message::{Message, MsgList};
-use super::options;
-use super::rpc::*;
 use super::{
     core::{NodeCore, RaftState},
+    message::{Message, MsgList},
+    options,
     result::RaftProposeResult,
+    rpc::*,
 };
 use crate::Result;
 use crate::{storage::LocalStorage, VelliErrorType};
@@ -64,6 +64,17 @@ async fn recv_append_entries_rpc(mut req: Request<Arc<Mutex<NodeCore>>>) -> tide
     Ok(response)
 }
 
+async fn recv_propose_request(mut req: Request<Arc<Mutex<NodeCore>>>) -> tide::Result {
+    let request: ProposeRequest = req.body_json().await?;
+    let node = Arc::clone(req.state());
+    let mut guard = node.lock().await;
+    let entry = guard.append_log(request.content);
+    let reply = ProposeReply { index: Some(entry) };
+    let mut response = Response::new(StatusCode::Ok);
+    response.set_body(serde_json::to_string(&reply).unwrap());
+    Ok(response)
+}
+
 impl RaftNodeImpl {
     pub fn new(path: PathBuf, self_info: NodeInfo, other_nodes: Vec<NodeInfo>) -> RaftNodeImpl {
         let node = NodeCore::new(self_info.id, other_nodes.iter().map(|x| x.id).collect());
@@ -92,6 +103,9 @@ impl RaftNodeImpl {
                 server
                     .at(&options::RAFT_APPEND_ENTRIES_URI)
                     .post(recv_append_entries_rpc);
+                server
+                    .at(&options::RAFT_PROPOSE_URI)
+                    .post(recv_propose_request);
             }
             None => unreachable!(),
         }
@@ -184,6 +198,29 @@ impl RaftNodeImpl {
         Ok(())
     }
 
+    async fn send_propose_request(
+        leader_addr: String,
+        request: ProposeRequest,
+    ) -> Result<ProposeReply> {
+        let body = surf::Body::from_json(&request)?;
+        let mut response = surf::post(format!(
+            "http://{}{}",
+            leader_addr,
+            options::RAFT_PROPOSE_URI
+        ))
+        .body(body)
+        .await?;
+        if response.status() != 200 {
+            Err(VelliErrorType::ConnectionError)?
+        }
+        let reply: ProposeReply = response.body_json().await?;
+        info!(
+            "recv propose reply: {}",
+            serde_json::to_string(&reply).unwrap()
+        );
+        Ok(reply)
+    }
+
     async fn queue(&mut self) -> Result<()> {
         loop {
             match self.msg_list_queue_rx.recv().await {
@@ -220,10 +257,43 @@ impl RaftNodeImpl {
                 Ok(guard.recv_request_vote_reply(id, request, reply))
             }
             Message::ProposeRequest {
-                content: _,
-                callback: _,
+                content,
+                mut callback,
             } => {
-                // Todo
+                let mut g = self.node.lock().await;
+                let leader_id = g.leader_id();
+                match leader_id {
+                    Some(id) => {
+                        if id == g.id() {
+                            let entry = g.append_log(content);
+                            drop(g);
+                            callback(RaftProposeResult::Success(entry));
+                        } else {
+                            drop(g);
+                            let leader_addr = self.other_nodes[&id].clone();
+                            task::spawn(async move {
+                                let reply = Self::send_propose_request(
+                                    leader_addr,
+                                    ProposeRequest { content },
+                                )
+                                .await;
+                                match reply {
+                                    Ok(reply) => match reply.index {
+                                        Some(l) => callback(RaftProposeResult::Success(l)),
+                                        None => callback(RaftProposeResult::CurrentNoLeader),
+                                    },
+                                    Err(e) => {
+                                        warn!("{}", e);
+                                    }
+                                }
+                            });
+                        }
+                    }
+                    None => {
+                        drop(g);
+                        callback(RaftProposeResult::CurrentNoLeader);
+                    }
+                }
                 Ok(())
             }
             Message::UpdateNodeInfo { node_info_list } => {
@@ -270,8 +340,10 @@ impl RaftNodeHandle {
             .send(vec![Message::ProposeRequest {
                 content: message,
                 callback: Box::new(move |result| match block_on(sx.send(result)) {
-                    Ok(()) => Ok(()),
-                    Err(e) => Err(e)?,
+                    Ok(()) => (),
+                    Err(e) => {
+                        warn!("{}", e);
+                    }
                 }),
             }])
             .await?;
