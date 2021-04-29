@@ -95,7 +95,7 @@ impl NodeCore {
             if self.log.len() == entry.index - 1 {
                 self.log.push(entry);
             } else {
-                panic!("")
+                panic!("Invalid log!!!")
             }
         }
         if request.leader_commit > self.commit_index {
@@ -116,7 +116,7 @@ impl NodeCore {
     }
 
     pub fn recv_request_vote_rpc(&mut self, request: RequestVoteRPC) -> RequestVoteReply {
-        info!(
+        debug!(
             "Node {} received RequestVoteRPC from Node {}.",
             self.id, request.candidate_id
         );
@@ -132,7 +132,7 @@ impl NodeCore {
         };
         // Reply false if term < currentTerm (§5.1)
         if request.term < self.current_term {
-            info!("Node {} refused RequestVoteRPC from node {} on term {} because candidate's term is low.",self.id, request.candidate_id, request.term);
+            debug!("Node {} refused RequestVoteRPC from node {} on term {} because candidate's term is low.",self.id, request.candidate_id, request.term);
             return reply;
         }
         // If votedFor is null or candidateId, and candidate’s log is at
@@ -144,7 +144,7 @@ impl NodeCore {
         {
             match self.voted_for {
                 None => {
-                    info!(
+                    debug!(
                         "Node {} granted RequestVoteRPC from node {} on term {}.",
                         self.id, request.candidate_id, request.term
                     );
@@ -152,14 +152,14 @@ impl NodeCore {
                     self.voted_for = Some(request.candidate_id);
                 }
                 Some(id) if id == request.candidate_id => {
-                    info!(
+                    debug!(
                         "Node {} granted RequestVoteRPC from node {} on term {}.",
                         self.id, request.candidate_id, request.term
                     );
                     reply.vote_granted = true;
                 }
                 Some(id) => {
-                    info!("Node {} refused RequestVoteRPC from node {} on term {} because have voted for node {}.",self.id, request.candidate_id, request.term,id);
+                    debug!("Node {} refused RequestVoteRPC from node {} on term {} because have voted for node {}.",self.id, request.candidate_id, request.term,id);
                     return reply;
                 }
             }
@@ -178,7 +178,7 @@ impl NodeCore {
             && reply.vote_granted == true
         {
             self.vote_count += 1;
-            info!(
+            debug!(
                 "Node {} received vote from {}, vote count for term {}: {}",
                 self.id, id, self.current_term, self.vote_count,
             );
@@ -206,11 +206,8 @@ impl NodeCore {
             }
             let mut match_list = self.match_index.values().cloned().collect::<Vec<usize>>();
             match_list.sort();
-            let most = match_list[self.node_list.len() / 2 - 1];
-            while self.commit_index <= most {
-                // commit (self.commit_index)
-                self.commit_index += 1;
-            }
+            let most = match_list[self.node_list.len() / 2];
+            self.commit_index = most;
         } else {
             let index = self.next_index[&id];
             self.next_index
@@ -265,17 +262,17 @@ impl NodeCore {
                 leader_commit: self.commit_index,
                 entries: vec![],
             };
-            let next_index = self.next_index[&node] - 1;
+            let next_index = self.next_index[&node];
             if self.log.len() > 0 {
-                if next_index > 1 {
+                if next_index >= 1 {
                     request.prev_log_index = next_index - 1;
-                    request.entries[..self.log.len() - request.prev_log_index]
-                        .clone_from_slice(&self.log[request.prev_log_index..]);
                 }
-
                 if self.log.len() > 1 && next_index > 1 {
                     request.prev_log_term = self.log[request.prev_log_index - 1].term;
                 }
+                request
+                    .entries
+                    .extend_from_slice(&self.log[request.prev_log_index..]);
             }
             list.push(Message::SendAppendEntriesRPC {
                 id: node.clone(),
@@ -299,6 +296,10 @@ impl NodeCore {
             content: Some(content),
         };
         self.log.push(entry.clone());
+        debug!(
+            "Node {}: log {}:{} appended.",
+            self.id, entry.index, entry.term
+        );
         entry
     }
 
@@ -383,12 +384,19 @@ impl NodeCore {
     }
 
     fn commit(&mut self) -> MsgList {
+        let mut msg_list = vec![];
+        debug!(
+            "Node {}: commit_index {}, last_applied {}",
+            self.id, self.commit_index, self.last_applied
+        );
         while self.commit_index > self.last_applied {
-            warn!("Node {}: {} applied.", self.id, self.last_applied);
-            // TODO: apply log[last_applied]
+            msg_list.push(Message::CommitLog {
+                log: self.log[self.last_applied].clone(),
+            });
+            info!("Node {}: log {} applied.", self.id, self.last_applied);
             self.last_applied += 1;
         }
-        vec![]
+        msg_list
     }
 
     pub fn state(&self) -> RaftState {

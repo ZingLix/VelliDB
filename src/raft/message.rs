@@ -1,4 +1,4 @@
-use super::rpc::*;
+use super::{log::LogEntry, rpc::*};
 use super::{result::RaftProposeResult, NodeInfo};
 
 pub enum Message {
@@ -26,6 +26,9 @@ pub enum Message {
     },
     UpdateNodeInfo {
         node_info_list: Vec<NodeInfo>,
+    },
+    CommitLog {
+        log: LogEntry,
     },
 }
 

@@ -6,5 +6,5 @@ mod options;
 mod result;
 mod rpc;
 pub use self::core::RaftState;
-pub use node::{NodeInfo, RaftNodeHandle, RaftNodeImpl};
+pub use node::{create_raft_node, NodeInfo, RaftNode, RaftNodeHandle};
 pub use result::RaftProposeResult;

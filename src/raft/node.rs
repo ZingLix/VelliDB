@@ -1,5 +1,6 @@
 use super::{
     core::{NodeCore, RaftState},
+    log::LogEntry,
     message::{Message, MsgList},
     options,
     result::RaftProposeResult,
@@ -33,6 +34,48 @@ impl NodeInfo {
     }
 }
 
+pub struct RaftNode {
+    committed_index_rx: Receiver<LogEntry>,
+    node: Arc<Mutex<NodeCore>>,
+    self_info: NodeInfo,
+    msg_list_queue_sx: Sender<MsgList>,
+}
+
+impl RaftNode {
+    pub(crate) fn sender(&self) -> Sender<MsgList> {
+        self.msg_list_queue_sx.clone()
+    }
+
+    pub(crate) fn core(&self) -> Arc<Mutex<NodeCore>> {
+        Arc::clone(&self.node)
+    }
+
+    pub async fn state(&self) -> RaftState {
+        let guard = self.node.lock().await;
+        guard.state()
+    }
+
+    pub async fn new_log(&self) -> Result<LogEntry> {
+        Ok(self.committed_index_rx.recv().await?)
+    }
+
+    pub fn node_info(&self) -> NodeInfo {
+        self.self_info.clone()
+    }
+
+    pub fn handle(&self) -> RaftNodeHandle {
+        RaftNodeHandle::new(self)
+    }
+}
+
+pub fn create_raft_node(
+    path: PathBuf,
+    self_info: NodeInfo,
+    other_nodes: Vec<NodeInfo>,
+) -> RaftNodeImpl {
+    RaftNodeImpl::new(path, self_info, other_nodes)
+}
+
 pub struct RaftNodeImpl {
     self_info: NodeInfo,
     other_nodes: HashMap<u64, String>,
@@ -42,6 +85,8 @@ pub struct RaftNodeImpl {
     node: Arc<Mutex<NodeCore>>,
     msg_list_queue_rx: Receiver<MsgList>,
     msg_list_queue_sx: Sender<MsgList>,
+    log_rx: Receiver<LogEntry>,
+    log_sx: Sender<LogEntry>,
 }
 
 async fn recv_request_vote_rpc(mut req: Request<Arc<Mutex<NodeCore>>>) -> tide::Result {
@@ -76,10 +121,11 @@ async fn recv_propose_request(mut req: Request<Arc<Mutex<NodeCore>>>) -> tide::R
 }
 
 impl RaftNodeImpl {
-    pub fn new(path: PathBuf, self_info: NodeInfo, other_nodes: Vec<NodeInfo>) -> RaftNodeImpl {
+    fn new(path: PathBuf, self_info: NodeInfo, other_nodes: Vec<NodeInfo>) -> RaftNodeImpl {
         let node = NodeCore::new(self_info.id, other_nodes.iter().map(|x| x.id).collect());
         let node = Arc::new(Mutex::new(node));
         let (sx, rx) = unbounded();
+        let (log_sx, log_rx) = unbounded();
         RaftNodeImpl {
             self_info,
             other_nodes: other_nodes
@@ -91,6 +137,8 @@ impl RaftNodeImpl {
             node,
             msg_list_queue_rx: rx,
             msg_list_queue_sx: sx,
+            log_rx,
+            log_sx,
         }
     }
 
@@ -113,9 +161,15 @@ impl RaftNodeImpl {
         Ok(())
     }
 
-    pub async fn start(mut self) -> Result<()> {
+    pub fn start(mut self) -> Result<RaftNode> {
         self.init_server()?;
 
+        let ret_node = RaftNode {
+            committed_index_rx: self.log_rx.clone(),
+            self_info: self.self_info.clone(),
+            node: Arc::clone(&self.node),
+            msg_list_queue_sx: self.msg_list_queue_sx.clone(),
+        };
         task::spawn(
             self.server
                 .take()
@@ -142,8 +196,8 @@ impl RaftNodeImpl {
                 }
             }
         });
-        self.queue().await?;
-        Ok(())
+        task::spawn(self.queue());
+        Ok(ret_node)
     }
 
     async fn send_append_entries_rpc(
@@ -217,7 +271,7 @@ impl RaftNodeImpl {
         Ok(reply)
     }
 
-    async fn queue(&mut self) -> Result<()> {
+    async fn queue(mut self) -> Result<()> {
         loop {
             match self.msg_list_queue_rx.recv().await {
                 Ok(msg_list) => {
@@ -299,20 +353,23 @@ impl RaftNodeImpl {
                     .collect();
                 Ok(())
             }
+            Message::CommitLog { log } => {
+                self.storage
+                    .lock()
+                    .await
+                    .set(
+                        log.index.to_le_bytes().to_vec(),
+                        log.content.as_ref().unwrap().to_owned().clone(),
+                    )
+                    .await?;
+                info!(
+                    "Node {}: log {}:{} committed.",
+                    self.self_info.id, log.term, log.index
+                );
+                self.log_sx.send(log.clone()).await?;
+                Ok(())
+            }
         }
-    }
-
-    pub(crate) fn sender(&self) -> Sender<MsgList> {
-        self.msg_list_queue_sx.clone()
-    }
-
-    pub(crate) fn core(&self) -> Arc<Mutex<NodeCore>> {
-        Arc::clone(&self.node)
-    }
-
-    pub async fn state(&self) -> RaftState {
-        let guard = self.node.lock().await;
-        guard.state()
     }
 }
 
@@ -320,13 +377,15 @@ impl RaftNodeImpl {
 pub struct RaftNodeHandle {
     sx: Sender<MsgList>,
     core: Arc<Mutex<NodeCore>>,
+    node_info: NodeInfo,
 }
 
 impl RaftNodeHandle {
-    pub fn new(node: &RaftNodeImpl) -> RaftNodeHandle {
+    pub fn new(node: &RaftNode) -> RaftNodeHandle {
         RaftNodeHandle {
             sx: node.sender(),
             core: node.core(),
+            node_info: node.node_info(),
         }
     }
 
@@ -358,8 +417,7 @@ impl RaftNodeHandle {
     }
 
     pub async fn id(&self) -> u64 {
-        let guard = self.core.lock().await;
-        guard.id()
+        self.node_info.id
     }
 
     pub async fn set_node_info_list(&self, node_info_list: Vec<NodeInfo>) -> Result<()> {

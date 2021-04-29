@@ -4,7 +4,7 @@ use proxy::{ProxyMode, ProxyServer};
 use std::{collections::HashSet, time::Duration};
 use tempfile::TempDir;
 use velli_db::{
-    raft::{NodeInfo, RaftNodeHandle, RaftNodeImpl, RaftProposeResult, RaftState},
+    raft::{create_raft_node, NodeInfo, RaftNode, RaftNodeHandle, RaftProposeResult, RaftState},
     Result,
 };
 
@@ -82,7 +82,7 @@ fn generate_node_info_list(start_port: u32, node_count: u32) -> Vec<NodeInfo> {
     node_info_list
 }
 
-fn prepare_node(node_count: u32, test_no: u32) -> (Vec<RaftNodeHandle>, ProxyServer) {
+fn prepare_node(node_count: u32, test_no: u32) -> (Vec<RaftNode>, ProxyServer) {
     let start_port = start_port(test_no);
     let node_info_list = generate_node_info_list(start_port, node_count);
     let mut proxy_port_map = vec![];
@@ -99,15 +99,14 @@ fn prepare_node(node_count: u32, test_no: u32) -> (Vec<RaftNodeHandle>, ProxySer
             format!("0.0.0.0:{}", proxy_start_port + n.id as u32).into(),
         );
 
-        let node = RaftNodeImpl::new(
+        let node = create_raft_node(
             temp_dir.path().to_path_buf(),
             real_n,
             node_info_list.clone(),
-        );
-        node_list.push(RaftNodeHandle::new(&node));
-        task::spawn(async move {
-            node.start().await.unwrap();
-        });
+        )
+        .start()
+        .unwrap();
+        node_list.push(node);
     }
     (node_list, s)
 }
@@ -147,20 +146,20 @@ async fn connect(server: &mut ProxyServer, node: &RaftNodeHandle, test_no: u32) 
 async fn init_election() -> Result<()> {
     const TEST_NO: u32 = 0;
     let (node_list, _) = prepare_node(3, TEST_NO);
+    let handle_list = node_list.iter().map(|x| RaftNodeHandle::new(&x)).collect();
+    let leader_list = check_one_leader(&handle_list);
 
-    let leader_list = check_one_leader(&node_list);
+    let term = handle_list[0].terms().await;
 
-    let term = node_list[0].terms().await;
-
-    assert!(check_terms(&node_list));
+    assert!(check_terms(&handle_list));
     assert!(term >= 1);
 
     // terms and leader should not change after a while
     wait(Duration::from_secs(1));
 
-    assert!(check_terms(&node_list));
-    assert_eq!(term, node_list[0].terms().await);
-    assert_eq!(leader_list, get_leader_list(&node_list));
+    assert!(check_terms(&handle_list));
+    assert_eq!(term, handle_list[0].terms().await);
+    assert_eq!(leader_list, get_leader_list(&handle_list));
 
     Ok(())
 }
@@ -170,34 +169,34 @@ async fn re_election() -> Result<()> {
     const TEST_NO: u32 = 1;
     let node_count = 3;
     let (node_list, mut server) = prepare_node(node_count, TEST_NO);
-
-    let leader_list = check_one_leader(&node_list);
+    let handle_list = node_list.iter().map(|x| RaftNodeHandle::new(&x)).collect();
+    let leader_list = check_one_leader(&handle_list);
     let old_leader = leader_list[0];
-    let old_term = node_list[0].terms().await;
+    let old_term = handle_list[0].terms().await;
 
     // if the leader disconnects, new leader will be elected
-    disconnect(&mut server, &node_list[old_leader as usize], TEST_NO).await;
+    disconnect(&mut server, &handle_list[old_leader as usize], TEST_NO).await;
     wait(Duration::from_secs(1));
-    let leader_list = check_one_leader_except(&node_list, &id_set(&vec![old_leader]));
+    let leader_list = check_one_leader_except(&handle_list, &id_set(&vec![old_leader]));
     let new_leader = leader_list[0];
-    let new_term = node_list[new_leader as usize].terms().await;
+    let new_term = handle_list[new_leader as usize].terms().await;
     assert!(new_term > old_term);
 
     // when the old leader reconnects, new leader should not be distrubed
-    connect(&mut server, &node_list[old_leader as usize], TEST_NO).await;
+    connect(&mut server, &handle_list[old_leader as usize], TEST_NO).await;
     wait(Duration::from_secs(1));
-    let leader_list = check_one_leader(&node_list);
+    let leader_list = check_one_leader(&handle_list);
     assert_eq!(new_leader, leader_list[0]);
     // assert_eq!()
 
     // when there's no quorum, no leader should be elected
     (0..node_count as usize).for_each(|x| {
         if x % 2 == 0 {
-            block_on(disconnect(&mut server, &node_list[x], TEST_NO));
+            block_on(disconnect(&mut server, &handle_list[x], TEST_NO));
         }
     });
     wait(Duration::from_secs(1));
-    let leader_list: Vec<u64> = get_leader_list(&node_list)
+    let leader_list: Vec<u64> = get_leader_list(&handle_list)
         .into_iter()
         .filter(|x| x != &new_leader)
         .collect();
@@ -206,35 +205,32 @@ async fn re_election() -> Result<()> {
     // when quorum restores, leader should be elected
     (0..node_count as usize).for_each(|x| {
         if x % 2 == 0 {
-            block_on(connect(&mut server, &node_list[x], TEST_NO));
+            block_on(connect(&mut server, &handle_list[x], TEST_NO));
         }
     });
     wait(Duration::from_secs(1));
-    check_one_leader(&node_list);
+    check_one_leader(&handle_list);
 
     Ok(())
 }
 
-#[macro_use]
-extern crate log;
-#[async_std::test]
+#[async_std::test(timeout=Duration::from_secs(1))]
 async fn basic_agree() -> Result<()> {
-    env_logger::Builder::new()
-        .parse_filters("warn,velli_db=info")
-        .init();
     const TEST_NO: u32 = 2;
     let (node_list, _) = prepare_node(3, TEST_NO);
+    let handle_list = node_list.iter().map(|x| RaftNodeHandle::new(&x)).collect();
+    check_one_leader(&handle_list);
 
-    check_one_leader(&node_list);
+    let term = handle_list[0].terms().await;
 
-    let term = node_list[0].terms().await;
-
-    for i in 0..node_list.len() {
-        let node = &node_list[i];
-        match node.propose(node.id().await.to_string().into_bytes()).await {
+    for i in 0..handle_list.len() {
+        let node = &handle_list[i];
+        match node
+            .propose(format!("Log{}", node.id().await).into_bytes())
+            .await
+        {
             Ok(r) => match r {
                 RaftProposeResult::Success(entry) => {
-                    info!("Log {}:{} proposed.", entry.term, entry.index);
                     assert_eq!(entry.term, term);
                     assert_eq!(entry.index, i + 1);
                 }
@@ -245,6 +241,16 @@ async fn basic_agree() -> Result<()> {
             Err(e) => panic!("{}", e),
         };
     }
-    sleep(Duration::from_secs(5)).await;
+    for n in node_list {
+        for i in 0..handle_list.len() {
+            let log = n.new_log().await?;
+            assert_eq!(log.index, i + 1);
+            assert_eq!(
+                String::from_utf8(log.content.unwrap()).unwrap(),
+                format!("Log{}", i)
+            );
+        }
+    }
+    check_one_leader(&handle_list);
     Ok(())
 }
