@@ -35,7 +35,7 @@ impl NodeInfo {
 }
 
 pub struct RaftNode {
-    committed_index_rx: Receiver<LogEntry>,
+    committed_log_rx: Receiver<LogEntry>,
     node: Arc<Mutex<NodeCore>>,
     self_info: NodeInfo,
     msg_list_queue_sx: Sender<MsgList>,
@@ -56,7 +56,7 @@ impl RaftNode {
     }
 
     pub async fn new_log(&self) -> Result<LogEntry> {
-        Ok(self.committed_index_rx.recv().await?)
+        Ok(self.committed_log_rx.recv().await?)
     }
 
     pub fn node_info(&self) -> NodeInfo {
@@ -81,7 +81,7 @@ pub struct RaftNodeImpl {
     other_nodes: HashMap<u64, String>,
     #[allow(dead_code)]
     storage: Arc<Mutex<LocalStorage>>,
-    server: Option<tide::Server<Arc<Mutex<NodeCore>>>>,
+    server: Option<tide::Server<(Arc<Mutex<NodeCore>>, Sender<MsgList>)>>,
     node: Arc<Mutex<NodeCore>>,
     msg_list_queue_rx: Receiver<MsgList>,
     msg_list_queue_sx: Sender<MsgList>,
@@ -89,31 +89,55 @@ pub struct RaftNodeImpl {
     log_sx: Sender<LogEntry>,
 }
 
-async fn recv_request_vote_rpc(mut req: Request<Arc<Mutex<NodeCore>>>) -> tide::Result {
+async fn recv_request_vote_rpc(
+    mut req: Request<(Arc<Mutex<NodeCore>>, Sender<MsgList>)>,
+) -> tide::Result {
     let request: RequestVoteRPC = req.body_json().await?;
-    let node = Arc::clone(req.state());
-    let mut guard = node.lock().await;
-    let reply = guard.recv_request_vote_rpc(request);
+    let (node, sx) = req.state();
+    let (reply, mut msg_list) = {
+        let mut guard = node.lock().await;
+        guard.recv_request_vote_rpc(request)
+    };
+    let (oneshot_sx, oneshot_rx) = bounded(1);
+    if msg_list.len() != 0 {
+        msg_list.push(Message::Callback { sx: oneshot_sx });
+        sx.send(msg_list).await?;
+        oneshot_rx.recv().await?;
+    }
     let mut response = Response::new(StatusCode::Ok);
     response.set_body(serde_json::to_string(&reply).unwrap());
     Ok(response)
 }
 
-async fn recv_append_entries_rpc(mut req: Request<Arc<Mutex<NodeCore>>>) -> tide::Result {
+async fn recv_append_entries_rpc(
+    mut req: Request<(Arc<Mutex<NodeCore>>, Sender<MsgList>)>,
+) -> tide::Result {
     let request: AppendEntriesRPC = req.body_json().await?;
-    let node = Arc::clone(req.state());
-    let mut guard = node.lock().await;
-    let reply = guard.recv_append_entries_rpc(request);
+    let (node, sx) = req.state();
+    let (reply, mut msg_list) = {
+        let mut guard = node.lock().await;
+        guard.recv_append_entries_rpc(request)
+    };
+    let (oneshot_sx, oneshot_rx) = bounded(1);
+    if msg_list.len() != 0 {
+        msg_list.push(Message::Callback { sx: oneshot_sx });
+        sx.send(msg_list).await?;
+        oneshot_rx.recv().await?;
+    }
     let mut response = Response::new(StatusCode::Ok);
     response.set_body(serde_json::to_string(&reply).unwrap());
     Ok(response)
 }
 
-async fn recv_propose_request(mut req: Request<Arc<Mutex<NodeCore>>>) -> tide::Result {
+async fn recv_propose_request(
+    mut req: Request<(Arc<Mutex<NodeCore>>, Sender<MsgList>)>,
+) -> tide::Result {
     let request: ProposeRequest = req.body_json().await?;
-    let node = Arc::clone(req.state());
-    let mut guard = node.lock().await;
-    let entry = guard.append_log(request.content);
+    let (node, _) = req.state();
+    let entry = {
+        let mut guard = node.lock().await;
+        guard.append_log(request.content)
+    };
     let reply = ProposeReply { index: Some(entry) };
     let mut response = Response::new(StatusCode::Ok);
     response.set_body(serde_json::to_string(&reply).unwrap());
@@ -133,7 +157,7 @@ impl RaftNodeImpl {
                 .map(|x| (x.id, x.address.clone()))
                 .collect(),
             storage: Arc::new(Mutex::new(block_on(LocalStorage::new(path)).unwrap())),
-            server: Some(tide::with_state(node.clone())),
+            server: Some(tide::with_state((node.clone(), sx.clone()))),
             node,
             msg_list_queue_rx: rx,
             msg_list_queue_sx: sx,
@@ -165,7 +189,7 @@ impl RaftNodeImpl {
         self.init_server()?;
 
         let ret_node = RaftNode {
-            committed_index_rx: self.log_rx.clone(),
+            committed_log_rx: self.log_rx.clone(),
             self_info: self.self_info.clone(),
             node: Arc::clone(&self.node),
             msg_list_queue_sx: self.msg_list_queue_sx.clone(),
@@ -353,23 +377,58 @@ impl RaftNodeImpl {
                     .collect();
                 Ok(())
             }
-            Message::CommitLog { log } => {
+            Message::PersistCurrentTerm { term } => {
                 self.storage
                     .lock()
                     .await
                     .set(
-                        log.index.to_le_bytes().to_vec(),
-                        log.content.as_ref().unwrap().to_owned().clone(),
+                        options::STORAGE_KEY_CURRENT_TERM.as_bytes().to_vec(),
+                        term.to_le_bytes().to_vec(),
                     )
                     .await?;
-                info!(
-                    "Node {}: log {}:{} committed.",
-                    self.self_info.id, log.term, log.index
-                );
-                self.log_sx.send(log.clone()).await?;
+
+                Ok(())
+            }
+            Message::PersistVotedFor { voted_for } => {
+                let value = match voted_for {
+                    Some(v) => v.to_le_bytes().to_vec(),
+                    None => vec![],
+                };
+                self.storage
+                    .lock()
+                    .await
+                    .set(options::STORAGE_KEY_VOTED_FOR.as_bytes().to_vec(), value)
+                    .await?;
+
+                Ok(())
+            }
+            Message::PersistLog { log } => {
+                {
+                    let mut storage = self.storage.lock().await;
+                    for l in log {
+                        storage
+                            .set(Self::log_key(l.index), l.content.unwrap())
+                            .await?;
+                    }
+                }
+
+                Ok(())
+            }
+            Message::Callback { sx } => {
+                sx.send(()).await?;
+                Ok(())
+            }
+            Message::CommitLog { log } => {
+                self.log_sx.send(log).await?;
                 Ok(())
             }
         }
+    }
+
+    fn log_key(index: usize) -> Vec<u8> {
+        let mut bytes = options::STORAGE_KEY_LOG_KEY_PREFIX.as_bytes().to_vec();
+        bytes.extend(index.to_le_bytes().to_vec());
+        bytes
     }
 }
 

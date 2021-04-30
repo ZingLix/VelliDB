@@ -48,16 +48,20 @@ impl NodeCore {
         }
     }
 
-    pub fn recv_append_entries_rpc(&mut self, request: AppendEntriesRPC) -> AppendEntriesReply {
+    pub fn recv_append_entries_rpc(
+        &mut self,
+        request: AppendEntriesRPC,
+    ) -> (AppendEntriesReply, MsgList) {
         trace!(
             "Node {} received AppendEntriesRPC from Node {}.",
             self.id,
             request.leader_id
         );
+        let mut msg_list = vec![];
         // If RPC request or response contains term T > currentTerm:
         // set currentTerm = T, convert to follower (§5.1)
         if request.term > self.current_term {
-            self.apply_new_term(request.term, Some(request.leader_id));
+            msg_list.extend(self.apply_new_term(request.term, Some(request.leader_id)));
             if self.state == RaftState::Candidate {
                 self.convert_to_follower();
             }
@@ -70,7 +74,7 @@ impl NodeCore {
         self.heartbeat_elapsed = 0;
         // Reply false if term < currentTerm (§5.1)
         if request.term < self.current_term {
-            return reply;
+            return (reply, msg_list);
         }
         self.current_leader_id = Some(request.leader_id);
         // Reply false if log doesn’t contain an entry at prevLogIndex
@@ -79,7 +83,7 @@ impl NodeCore {
             || (request.prev_log_index != 0
                 && self.log.last().unwrap().term != request.prev_log_term)
         {
-            return reply;
+            return (reply, msg_list);
         }
         // If an existing entry conflicts with a new one (same index
         // but different terms), delete the existing entry and all that
@@ -91,6 +95,9 @@ impl NodeCore {
             }
         }
         //  Append any new entries not already in the log
+        msg_list.push(Message::PersistLog {
+            log: request.entries.clone(),
+        });
         for entry in request.entries {
             if self.log.len() == entry.index - 1 {
                 self.log.push(entry);
@@ -112,18 +119,22 @@ impl NodeCore {
             );
         }
         reply.success = true;
-        reply
+        (reply, msg_list)
     }
 
-    pub fn recv_request_vote_rpc(&mut self, request: RequestVoteRPC) -> RequestVoteReply {
+    pub fn recv_request_vote_rpc(
+        &mut self,
+        request: RequestVoteRPC,
+    ) -> (RequestVoteReply, MsgList) {
         debug!(
             "Node {} received RequestVoteRPC from Node {}.",
             self.id, request.candidate_id
         );
         // If RPC request or response contains term T > currentTerm:
         // set currentTerm = T, convert to follower (§5.1)
+        let mut msg_list = vec![];
         if request.term > self.current_term {
-            self.apply_new_term(request.term, None);
+            msg_list.extend(self.apply_new_term(request.term, None));
         }
 
         let mut reply = RequestVoteReply {
@@ -133,7 +144,7 @@ impl NodeCore {
         // Reply false if term < currentTerm (§5.1)
         if request.term < self.current_term {
             debug!("Node {} refused RequestVoteRPC from node {} on term {} because candidate's term is low.",self.id, request.candidate_id, request.term);
-            return reply;
+            return (reply, msg_list);
         }
         // If votedFor is null or candidateId, and candidate’s log is at
         // least as up-to-date as receiver’s log, grant vote (§5.2, §5.4)
@@ -160,11 +171,14 @@ impl NodeCore {
                 }
                 Some(id) => {
                     debug!("Node {} refused RequestVoteRPC from node {} on term {} because have voted for node {}.",self.id, request.candidate_id, request.term,id);
-                    return reply;
+                    return (reply, msg_list);
                 }
             }
         }
-        reply
+        msg_list.push(Message::PersistVotedFor {
+            voted_for: self.voted_for,
+        });
+        (reply, msg_list)
     }
 
     pub fn recv_request_vote_reply(
@@ -303,7 +317,7 @@ impl NodeCore {
         entry
     }
 
-    fn apply_new_term(&mut self, new_term: u64, leader_id: Option<u64>) {
+    fn apply_new_term(&mut self, new_term: u64, leader_id: Option<u64>) -> MsgList {
         match leader_id {
             Some(id) => info!(
                 "Node {} comes to term {} which leader is {}.",
@@ -319,6 +333,10 @@ impl NodeCore {
         self.current_leader_id = leader_id;
         self.voted_for = None;
         self.convert_to_follower();
+        vec![
+            Message::PersistCurrentTerm { term: new_term },
+            Message::PersistVotedFor { voted_for: None },
+        ]
     }
 
     fn convert_to_follower(&mut self) {

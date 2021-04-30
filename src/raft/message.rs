@@ -1,5 +1,6 @@
 use super::{log::LogEntry, rpc::*};
 use super::{result::RaftProposeResult, NodeInfo};
+use async_std::channel::Sender;
 
 pub enum Message {
     SendRequestVoteRPC {
@@ -27,8 +28,20 @@ pub enum Message {
     UpdateNodeInfo {
         node_info_list: Vec<NodeInfo>,
     },
+    PersistCurrentTerm {
+        term: u64,
+    },
+    PersistVotedFor {
+        voted_for: Option<u64>,
+    },
+    PersistLog {
+        log: Vec<LogEntry>,
+    },
     CommitLog {
         log: LogEntry,
+    },
+    Callback {
+        sx: Sender<()>,
     },
 }
 
