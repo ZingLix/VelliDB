@@ -1,23 +1,27 @@
 mod proxy;
 use async_std::task::{self, block_on, sleep};
 use proxy::{ProxyMode, ProxyServer};
-use std::{collections::HashSet, time::Duration};
+use rand::{distributions::Alphanumeric, Rng};
+use std::{
+    collections::{HashMap, HashSet},
+    time::Duration,
+};
 use tempfile::TempDir;
 use velli_db::{
     raft::{create_raft_node, NodeInfo, RaftNode, RaftNodeHandle, RaftProposeResult, RaftState},
     Result,
 };
 
-type NodeVec = Vec<RaftNodeHandle>;
+type NodeMap = HashMap<u64, RaftNodeHandle>;
 
 const BASIC_PORT: u32 = 38000;
 const PROXY_PORT_SPAN: u32 = 10000;
 const PORT_SPAN_PER_TEST: u32 = 10;
 const ONE_LEADER_CHECK_MAX_RETRY_COUNT: u32 = 5;
 
-fn get_leader_list(node_list: &NodeVec) -> Vec<u64> {
+fn get_leader_list(node_list: &NodeMap) -> Vec<u64> {
     let mut leader_list = vec![];
-    for node in node_list {
+    for (_, node) in node_list {
         let state = block_on(node.state());
         if state == RaftState::Leader {
             leader_list.push(block_on(node.id()));
@@ -26,17 +30,23 @@ fn get_leader_list(node_list: &NodeVec) -> Vec<u64> {
     leader_list
 }
 
-fn check_terms(node_list: &NodeVec) -> bool {
-    let first_term = task::block_on(node_list[0].terms());
-    for n in node_list[1..].into_iter() {
-        if task::block_on(n.terms()) != first_term {
-            return false;
+fn check_terms(node_list: &NodeMap) -> bool {
+    let mut term = None;
+    for (_, n) in node_list {
+        let this_term = task::block_on(n.terms());
+        match term {
+            Some(t) => {
+                if t != this_term {
+                    return false;
+                }
+            }
+            None => term = Some(this_term),
         }
     }
     true
 }
 
-fn check_one_leader(node_list: &NodeVec) -> Vec<u64> {
+fn check_one_leader(node_list: &NodeMap) -> Vec<u64> {
     check_one_leader_except(node_list, &HashSet::new())
 }
 
@@ -44,7 +54,7 @@ fn id_set(id_list: &Vec<u64>) -> HashSet<u64> {
     id_list.iter().cloned().collect()
 }
 
-fn check_one_leader_except(node_list: &NodeVec, except: &HashSet<u64>) -> Vec<u64> {
+fn check_one_leader_except(node_list: &NodeMap, except: &HashSet<u64>) -> Vec<u64> {
     let mut leader_list = vec![];
     for count in 0..ONE_LEADER_CHECK_MAX_RETRY_COUNT {
         // wait for the leader to be elected
@@ -71,27 +81,27 @@ fn proxy_start_port(test_no: u32) -> u32 {
     BASIC_PORT + PROXY_PORT_SPAN + test_no * PORT_SPAN_PER_TEST
 }
 
-fn generate_node_info_list(start_port: u32, node_count: u32) -> Vec<NodeInfo> {
+fn generate_node_info_list(start_port: u32, node_count: u64) -> Vec<NodeInfo> {
     let mut node_info_list = vec![];
     for i in 0..node_count {
         node_info_list.push(NodeInfo::new(
-            i as u64,
-            format!("0.0.0.0:{}", start_port + i).into(),
+            i,
+            format!("0.0.0.0:{}", start_port + i as u32).into(),
         ));
     }
     node_info_list
 }
 
-fn prepare_node(node_count: u32, test_no: u32) -> (Vec<RaftNode>, ProxyServer) {
+fn prepare_node(node_count: u64, test_no: u32) -> (HashMap<u64, RaftNode>, ProxyServer) {
     let start_port = start_port(test_no);
     let node_info_list = generate_node_info_list(start_port, node_count);
     let mut proxy_port_map = vec![];
     let proxy_start_port = proxy_start_port(test_no);
-    for i in 0..node_count {
+    for i in 0..node_count as u32 {
         proxy_port_map.push((start_port + i, proxy_start_port + i));
     }
     let s = ProxyServer::new(&proxy_port_map);
-    let mut node_list = vec![];
+    let mut node_map = HashMap::new();
     for n in &node_info_list {
         let temp_dir = TempDir::new().expect("unable to create temporary dir.");
         let real_n = NodeInfo::new(
@@ -106,9 +116,10 @@ fn prepare_node(node_count: u32, test_no: u32) -> (Vec<RaftNode>, ProxyServer) {
         )
         .start()
         .unwrap();
-        node_list.push(node);
+        node_map.insert(n.id, node);
+        //node_list.push(node);
     }
-    (node_list, s)
+    (node_map, s)
 }
 
 fn wait(dur: Duration) -> () {
@@ -134,10 +145,10 @@ async fn disconnect(server: &mut ProxyServer, node: &RaftNodeHandle, test_no: u3
 
 async fn connect(server: &mut ProxyServer, node: &RaftNodeHandle, test_no: u32) {
     let start_port = start_port(test_no);
-    let node_count = node.node_count().await as u32;
+    let node_count = node.node_count().await;
     let node_id = node.id().await;
     server.set_proxy_mode(start_port + node_id as u32, ProxyMode::Normal);
-    node.set_node_info_list(generate_node_info_list(start_port, node_count))
+    node.set_node_info_list(generate_node_info_list(start_port, node_count as u64))
         .await
         .unwrap();
 }
@@ -145,11 +156,15 @@ async fn connect(server: &mut ProxyServer, node: &RaftNodeHandle, test_no: u32) 
 #[async_std::test]
 async fn init_election() -> Result<()> {
     const TEST_NO: u32 = 0;
-    let (node_list, _) = prepare_node(3, TEST_NO);
-    let handle_list = node_list.iter().map(|x| RaftNodeHandle::new(&x)).collect();
+    const NODE_COUNT: u64 = 3;
+    let (node_list, _) = prepare_node(NODE_COUNT, TEST_NO);
+    let handle_list = node_list
+        .iter()
+        .map(|(id, node)| (id.clone(), RaftNodeHandle::new(&node)))
+        .collect();
     let leader_list = check_one_leader(&handle_list);
 
-    let term = handle_list[0].terms().await;
+    let term = handle_list[&0].terms().await;
 
     assert!(check_terms(&handle_list));
     assert!(term >= 1);
@@ -158,7 +173,7 @@ async fn init_election() -> Result<()> {
     wait(Duration::from_secs(1));
 
     assert!(check_terms(&handle_list));
-    assert_eq!(term, handle_list[0].terms().await);
+    assert_eq!(term, handle_list[&0].terms().await);
     assert_eq!(leader_list, get_leader_list(&handle_list));
 
     Ok(())
@@ -167,32 +182,35 @@ async fn init_election() -> Result<()> {
 #[async_std::test]
 async fn re_election() -> Result<()> {
     const TEST_NO: u32 = 1;
-    let node_count = 3;
-    let (node_list, mut server) = prepare_node(node_count, TEST_NO);
-    let handle_list = node_list.iter().map(|x| RaftNodeHandle::new(&x)).collect();
+    const NODE_COUNT: u64 = 3;
+    let (node_list, mut server) = prepare_node(NODE_COUNT, TEST_NO);
+    let handle_list = node_list
+        .iter()
+        .map(|(id, node)| (id.clone(), RaftNodeHandle::new(&node)))
+        .collect();
     let leader_list = check_one_leader(&handle_list);
     let old_leader = leader_list[0];
-    let old_term = handle_list[0].terms().await;
+    let old_term = handle_list.values().next().unwrap().terms().await;
 
     // if the leader disconnects, new leader will be elected
-    disconnect(&mut server, &handle_list[old_leader as usize], TEST_NO).await;
+    disconnect(&mut server, &handle_list[&old_leader], TEST_NO).await;
     wait(Duration::from_secs(1));
     let leader_list = check_one_leader_except(&handle_list, &id_set(&vec![old_leader]));
     let new_leader = leader_list[0];
-    let new_term = handle_list[new_leader as usize].terms().await;
+    let new_term = handle_list[&new_leader].terms().await;
     assert!(new_term > old_term);
 
     // when the old leader reconnects, new leader should not be distrubed
-    connect(&mut server, &handle_list[old_leader as usize], TEST_NO).await;
+    connect(&mut server, &handle_list[&old_leader], TEST_NO).await;
     wait(Duration::from_secs(1));
     let leader_list = check_one_leader(&handle_list);
     assert_eq!(new_leader, leader_list[0]);
     // assert_eq!()
 
     // when there's no quorum, no leader should be elected
-    (0..node_count as usize).for_each(|x| {
+    (0..NODE_COUNT).for_each(|x| {
         if x % 2 == 0 {
-            block_on(disconnect(&mut server, &handle_list[x], TEST_NO));
+            block_on(disconnect(&mut server, &handle_list[&x], TEST_NO));
         }
     });
     wait(Duration::from_secs(1));
@@ -203,9 +221,9 @@ async fn re_election() -> Result<()> {
     assert_eq!(leader_list.len(), 0);
 
     // when quorum restores, leader should be elected
-    (0..node_count as usize).for_each(|x| {
+    (0..NODE_COUNT).for_each(|x| {
         if x % 2 == 0 {
-            block_on(connect(&mut server, &handle_list[x], TEST_NO));
+            block_on(connect(&mut server, &handle_list[&x], TEST_NO));
         }
     });
     wait(Duration::from_secs(1));
@@ -217,22 +235,22 @@ async fn re_election() -> Result<()> {
 #[async_std::test(timeout=Duration::from_secs(1))]
 async fn basic_agree() -> Result<()> {
     const TEST_NO: u32 = 2;
-    let (node_list, _) = prepare_node(3, TEST_NO);
-    let handle_list = node_list.iter().map(|x| RaftNodeHandle::new(&x)).collect();
+    const NODE_COUNT: u64 = 3;
+    let (node_list, _) = prepare_node(NODE_COUNT, TEST_NO);
+    let handle_list = node_list
+        .iter()
+        .map(|(id, node)| (id.clone(), RaftNodeHandle::new(&node)))
+        .collect();
     check_one_leader(&handle_list);
 
-    let term = handle_list[0].terms().await;
+    let term = handle_list.values().next().unwrap().terms().await;
 
-    for i in 0..handle_list.len() {
-        let node = &handle_list[i];
-        match node
-            .propose(format!("Log{}", node.id().await).into_bytes())
-            .await
-        {
+    for (i, node) in &handle_list {
+        match node.propose(format!("Log{}", i).into_bytes()).await {
             Ok(r) => match r {
                 RaftProposeResult::Success(entry) => {
                     assert_eq!(entry.term, term);
-                    assert_eq!(entry.index, i + 1);
+                    assert_eq!(entry.index as u64, i + 1);
                 }
                 RaftProposeResult::CurrentNoLeader => {
                     panic!("Leader should be elected.");
@@ -241,10 +259,10 @@ async fn basic_agree() -> Result<()> {
             Err(e) => panic!("{}", e),
         };
     }
-    for n in node_list {
-        for i in 0..handle_list.len() {
+    for (_, n) in node_list {
+        for (i, handle) in &handle_list {
             let log = n.new_log().await?;
-            assert_eq!(log.index, i + 1);
+            assert_eq!(log.index as u64, i + 1);
             assert_eq!(
                 String::from_utf8(log.content.unwrap()).unwrap(),
                 format!("Log{}", i)
@@ -252,5 +270,93 @@ async fn basic_agree() -> Result<()> {
         }
     }
     check_one_leader(&handle_list);
+    Ok(())
+}
+
+fn random_string() -> String {
+    rand::thread_rng()
+        .sample_iter(&Alphanumeric)
+        .take(10)
+        .map(char::from)
+        .collect()
+}
+
+async fn check_msg(node: &RaftNode, msg_list: &Vec<Vec<u8>>) -> Result<()> {
+    for msg in msg_list {
+        let log = node.new_log().await?;
+        assert_eq!(&log.content.unwrap(), msg);
+    }
+    Ok(())
+}
+
+async fn check_propose_result(
+    node_map: &mut HashMap<u64, RaftNode>,
+    propose_id: u64,
+    msg_count: usize,
+    except_id_set: &HashSet<u64>,
+) -> Result<Vec<Vec<u8>>> {
+    let mut msg_list = vec![];
+    for _ in 0..msg_count {
+        msg_list.push(random_string().into_bytes());
+    }
+    let handle_list: HashMap<u64, RaftNodeHandle> = node_map
+        .iter()
+        .map(|(id, node)| (id.clone(), RaftNodeHandle::new(node)))
+        .collect();
+    let term = handle_list[&propose_id].terms().await;
+
+    for msg in &msg_list {
+        match handle_list[&propose_id].propose(msg.clone()).await {
+            Ok(r) => match r {
+                RaftProposeResult::Success(l) => {
+                    assert_eq!(l.term, term);
+                }
+                RaftProposeResult::CurrentNoLeader => {
+                    panic!("Leader should be elected.")
+                }
+            },
+            Err(e) => panic!("{}", e),
+        }
+    }
+
+    for (id, node) in handle_list {
+        if except_id_set.contains(&node.id().await) {
+            continue;
+        }
+        check_msg(&node_map[&id], &msg_list).await?;
+    }
+    Ok(msg_list)
+}
+
+#[async_std::test(timeout=Duration::from_secs(10))]
+async fn fail_agree() -> Result<()> {
+    const TEST_NO: u32 = 3;
+    const NODE_COUNT: u64 = 3;
+    let (mut node_map, mut server) = prepare_node(NODE_COUNT, TEST_NO);
+    let handle_list = node_map
+        .iter()
+        .map(|(id, node)| (id.clone(), RaftNodeHandle::new(&node)))
+        .collect();
+    check_one_leader(&handle_list);
+
+    let leader_id = get_leader_list(&handle_list)[0];
+    let disconnect_id = (leader_id + 1) % NODE_COUNT;
+
+    disconnect(&mut server, &handle_list[&disconnect_id], TEST_NO).await;
+
+    let msg_list = check_propose_result(
+        &mut node_map,
+        leader_id,
+        3,
+        &[disconnect_id].iter().cloned().collect(),
+    )
+    .await?;
+
+    connect(&mut server, &handle_list[&disconnect_id], TEST_NO).await;
+    sleep(Duration::from_secs(1)).await;
+    check_msg(&node_map[&disconnect_id], &msg_list).await?;
+
+    check_propose_result(&mut node_map, leader_id, 3, &HashSet::new()).await?;
+
     Ok(())
 }
