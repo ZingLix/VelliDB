@@ -102,7 +102,13 @@ impl NodeCore {
             if self.log.len() == entry.index - 1 {
                 self.log.push(entry);
             } else {
-                panic!("Invalid log!!!")
+                error!(
+                    "Node {}: has {} log, but received log entry {}.",
+                    self.id,
+                    self.log.len(),
+                    entry.index - 1
+                );
+                panic!("Invalid log!!! ")
             }
         }
         if request.leader_commit > self.commit_index {
@@ -222,6 +228,10 @@ impl NodeCore {
             match_list.sort();
             let most = match_list[self.node_list.len() / 2];
             self.commit_index = most;
+            debug!(
+                "Node {}: node {} match index becomes {}, commit_index becomes {}.",
+                self.id, id, self.match_index[&id], self.commit_index
+            );
         } else {
             let index = self.next_index[&id];
             self.next_index
@@ -277,6 +287,7 @@ impl NodeCore {
                 entries: vec![],
             };
             let next_index = self.next_index[&node];
+            debug!("Node {} has logs with length {}.", self.id, self.log.len());
             if self.log.len() > 0 {
                 if next_index >= 1 {
                     request.prev_log_index = next_index - 1;
@@ -314,6 +325,9 @@ impl NodeCore {
             "Node {}: log {}:{} appended.",
             self.id, entry.index, entry.term
         );
+        if self.state == RaftState::Leader {
+            self.match_index.insert(self.id, self.log.len());
+        }
         entry
     }
 

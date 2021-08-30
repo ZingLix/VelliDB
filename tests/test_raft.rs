@@ -11,6 +11,8 @@ use velli_db::{
     raft::{create_raft_node, NodeInfo, RaftNode, RaftNodeHandle, RaftProposeResult, RaftState},
     Result,
 };
+#[macro_use]
+extern crate log;
 
 type NodeMap = HashMap<u64, RaftNodeHandle>;
 
@@ -260,7 +262,7 @@ async fn basic_agree() -> Result<()> {
         };
     }
     for (_, n) in node_list {
-        for (i, handle) in &handle_list {
+        for (i, _) in &handle_list {
             let log = n.new_log().await?;
             assert_eq!(log.index as u64, i + 1);
             assert_eq!(
@@ -341,8 +343,10 @@ async fn fail_agree() -> Result<()> {
 
     let leader_id = get_leader_list(&handle_list)[0];
     let disconnect_id = (leader_id + 1) % NODE_COUNT;
+    info!("Node {} is the leader", leader_id);
 
     disconnect(&mut server, &handle_list[&disconnect_id], TEST_NO).await;
+    info!("Node {} disconnected.", disconnect_id);
 
     let msg_list = check_propose_result(
         &mut node_map,
@@ -353,6 +357,7 @@ async fn fail_agree() -> Result<()> {
     .await?;
 
     connect(&mut server, &handle_list[&disconnect_id], TEST_NO).await;
+    info!("Node {} connected.", disconnect_id);
     sleep(Duration::from_secs(1)).await;
     check_msg(&node_map[&disconnect_id], &msg_list).await?;
 

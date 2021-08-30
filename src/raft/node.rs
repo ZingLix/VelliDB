@@ -237,6 +237,15 @@ impl RaftNodeImpl {
         ))
         .body(body)
         .await?;
+        debug!(
+            "Node {}: send to node {} AppendEntriesRPC with latest index {}.",
+            self.self_info.id,
+            target_id,
+            match request.entries.last() {
+                Some(x) => x.index.to_string(),
+                None => "None".to_string(),
+            }
+        );
         if response.status() != 200 {
             Err(VelliErrorType::ConnectionError)?
         }
