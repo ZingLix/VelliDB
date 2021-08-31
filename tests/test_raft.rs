@@ -247,7 +247,8 @@ async fn basic_agree() -> Result<()> {
 
     let term = handle_list.values().next().unwrap().terms().await;
 
-    for (i, node) in &handle_list {
+    let mut i = 0;
+    for (_, node) in &handle_list {
         match node.propose(format!("Log{}", i).into_bytes()).await {
             Ok(r) => match r {
                 RaftProposeResult::Success(entry) => {
@@ -260,15 +261,19 @@ async fn basic_agree() -> Result<()> {
             },
             Err(e) => panic!("{}", e),
         };
+        i += 1;
     }
+
     for (_, n) in node_list {
-        for (i, _) in &handle_list {
+        i = 0;
+        for (_, _) in &handle_list {
             let log = n.new_log().await?;
             assert_eq!(log.index as u64, i + 1);
             assert_eq!(
                 String::from_utf8(log.content.unwrap()).unwrap(),
                 format!("Log{}", i)
             );
+            i += 1;
         }
     }
     check_one_leader(&handle_list);
