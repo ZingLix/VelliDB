@@ -63,6 +63,14 @@ impl RaftNode {
         self.self_info.clone()
     }
 
+    pub fn has_log(&self) -> bool {
+        !self.committed_log_rx.is_empty()
+    }
+
+    pub fn log_count(&self) -> usize {
+        self.committed_log_rx.len()
+    }
+
     pub fn handle(&self) -> RaftNodeHandle {
         RaftNodeHandle::new(self)
     }
@@ -250,6 +258,10 @@ impl RaftNodeImpl {
             Err(VelliErrorType::ConnectionError)?
         }
         let reply: AppendEntriesReply = response.body_json().await?;
+        debug!(
+            "Node {}: got AppendEntriesRPC reply from node {}.",
+            self.self_info.id, target_id
+        );
         self.msg_list_queue_sx
             .send(vec![Message::RecvAppendEntriesReply {
                 id: target_id,
@@ -333,6 +345,10 @@ impl RaftNodeImpl {
             }
             Message::RecvAppendEntriesReply { id, request, reply } => {
                 let mut guard = self.node.lock().await;
+                trace!(
+                    "Node {}: dealing with RecvAppendEntriesReply.",
+                    self.self_info.id
+                );
                 Ok(guard.recv_append_entries_reply(id, request, reply))
             }
             Message::RecvRequestVoteReply { id, request, reply } => {
@@ -498,5 +514,10 @@ impl RaftNodeHandle {
     pub async fn node_count(&self) -> usize {
         let guard = self.core.lock().await;
         guard.node_count()
+    }
+
+    pub async fn log_history(&self) -> Vec<LogEntry> {
+        let node = self.core.lock().await;
+        node.log_history()
     }
 }

@@ -207,7 +207,6 @@ async fn re_election() -> Result<()> {
     wait(Duration::from_secs(1));
     let leader_list = check_one_leader(&handle_list);
     assert_eq!(new_leader, leader_list[0]);
-    // assert_eq!()
 
     // when there's no quorum, no leader should be elected
     (0..NODE_COUNT).for_each(|x| {
@@ -312,10 +311,22 @@ async fn check_propose_result(
         .collect();
     let term = handle_list[&propose_id].terms().await;
 
+    while node_map[&propose_id].has_log() {
+        let l = node_map[&propose_id].new_log().await?;
+        info!(
+            "Node {}: got log with term {} index {}",
+            propose_id, l.term, l.index
+        );
+    }
+
     for msg in &msg_list {
         match handle_list[&propose_id].propose(msg.clone()).await {
             Ok(r) => match r {
                 RaftProposeResult::Success(l) => {
+                    info!(
+                        "Node {}: proposed log with term {} index {}.",
+                        propose_id, l.term, l.index
+                    );
                     assert_eq!(l.term, term);
                 }
                 RaftProposeResult::CurrentNoLeader => {
@@ -326,11 +337,15 @@ async fn check_propose_result(
         }
     }
 
+    check_msg(&node_map[&propose_id], &msg_list).await?;
+
+    let log_list = handle_list[&propose_id].log_history().await;
+
     for (id, node) in handle_list {
-        if except_id_set.contains(&node.id().await) {
+        if except_id_set.contains(&node.id().await) || id == propose_id {
             continue;
         }
-        check_msg(&node_map[&id], &msg_list).await?;
+        assert!(log_list == node.log_history().await);
     }
     Ok(msg_list)
 }
@@ -366,6 +381,68 @@ async fn fail_agree() -> Result<()> {
     sleep(Duration::from_secs(1)).await;
     check_msg(&node_map[&disconnect_id], &msg_list).await?;
 
+    check_propose_result(&mut node_map, leader_id, 3, &HashSet::new()).await?;
+
+    Ok(())
+}
+
+#[async_std::test(timeout=Duration::from_secs(10))]
+async fn fail_no_agree() -> Result<()> {
+    // no agreement if too many followers disconnect
+    // use log::LevelFilter;
+    // env_logger::builder()
+    //     .filter_level(LevelFilter::Error)
+    //     .filter_module("velli_db", LevelFilter::Debug)
+    //     .filter_module("test_raft", LevelFilter::Info)
+    //     .init();
+    const TEST_NO: u32 = 4;
+    const NODE_COUNT: u64 = 5;
+    let (mut node_map, mut server) = prepare_node(NODE_COUNT, TEST_NO);
+    let handle_list = node_map
+        .iter()
+        .map(|(id, node)| (id.clone(), RaftNodeHandle::new(&node)))
+        .collect();
+    check_one_leader(&handle_list);
+
+    let leader_id = get_leader_list(&handle_list)[0];
+    let term = handle_list[&leader_id].terms().await;
+    info!("Node {} is the leader", leader_id);
+
+    for i in 0..3 {
+        let disconnect_id = (leader_id + i + 1) % NODE_COUNT;
+        disconnect(&mut server, &handle_list[&disconnect_id], TEST_NO).await;
+        info!("Node {} disconnected.", disconnect_id);
+    }
+
+    let mut msg_list = vec![];
+    for _ in 0..3 {
+        msg_list.push(random_string().into_bytes());
+    }
+
+    for msg in &msg_list {
+        match handle_list[&leader_id].propose(msg.clone()).await {
+            Ok(r) => match r {
+                RaftProposeResult::Success(l) => {
+                    assert_eq!(l.term, term);
+                }
+                RaftProposeResult::CurrentNoLeader => {}
+            },
+            Err(e) => panic!("{}", e),
+        }
+    }
+    sleep(Duration::from_secs(2)).await;
+    for (_, node) in &node_map {
+        assert_eq!(node.has_log(), false);
+    }
+
+    for i in 0..3 {
+        let reconnect_id = (leader_id + i + 1) % NODE_COUNT;
+        connect(&mut server, &handle_list[&reconnect_id], TEST_NO).await;
+        info!("Node {} reconnected.", reconnect_id);
+    }
+    sleep(Duration::from_secs(2)).await;
+    check_one_leader(&handle_list);
+    let leader_id = get_leader_list(&handle_list)[0];
     check_propose_result(&mut node_map, leader_id, 3, &HashSet::new()).await?;
 
     Ok(())

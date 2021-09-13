@@ -74,6 +74,7 @@ impl NodeCore {
         self.heartbeat_elapsed = 0;
         // Reply false if term < currentTerm (§5.1)
         if request.term < self.current_term {
+            debug!("Node {}: refused AppendEntriesRPC because current term {} is larger than remote term {}.", self.id, self.current_term, request.term);
             return (reply, msg_list);
         }
         self.current_leader_id = Some(request.leader_id);
@@ -83,16 +84,31 @@ impl NodeCore {
             || (request.prev_log_index != 0
                 && self.log.last().unwrap().term != request.prev_log_term)
         {
+            debug!("Node {}: refused AppendEntriesRPC because doesn’t contain an entry at prevLogIndex whose term matches prevLogTerm {}.", self.id, request.prev_log_term);
             return (reply, msg_list);
         }
         // If an existing entry conflicts with a new one (same index
         // but different terms), delete the existing entry and all that
         // follow it (§5.3)
-        if self.log.len() > request.prev_log_index && request.prev_log_index > 0 {
-            let log = &self.log[request.prev_log_index - 1];
-            if log.term != request.prev_log_term {
-                self.log.split_at(request.prev_log_index - 1);
-            }
+        if self.log.len() >= request.prev_log_index {
+            let split_idx = if request.prev_log_index > 0 {
+                let log = &self.log[request.prev_log_index - 1];
+                if log.term != request.prev_log_term {
+                    request.prev_log_index - 1
+                } else {
+                    self.log.len()
+                }
+            } else {
+                0
+            };
+
+            let (l, _) = self.log.split_at(split_idx);
+            debug!(
+                "Node {}: log conflicted, keep log from index {} .",
+                self.id,
+                split_idx + 1
+            );
+            self.log = l.to_vec();
         }
         //  Append any new entries not already in the log
         msg_list.push(Message::PersistLog {
@@ -193,6 +209,11 @@ impl NodeCore {
         _request: RequestVoteRPC,
         reply: RequestVoteReply,
     ) {
+        if reply.term > self.current_term {
+            self.current_term = reply.term;
+            self.convert_to_follower();
+            return;
+        }
         if reply.term == self.current_term
             && self.state == RaftState::Candidate
             && reply.vote_granted == true
@@ -214,25 +235,51 @@ impl NodeCore {
         request: AppendEntriesRPC,
         reply: AppendEntriesReply,
     ) {
+        if reply.term > self.current_term {
+            self.current_term = reply.term;
+            self.convert_to_follower();
+            return;
+        }
         if self.state != RaftState::Leader {
+            debug!(
+                "Node {}: received AppendEntriesRPC while i am {:?}",
+                self.id, self.state
+            );
             return;
         }
         if reply.success {
-            if self.log.len() >= self.next_index[&id] && request.entries.len() > 0 {
+            trace!(
+                "Node {}: self log len is {}, target {} next_index is {}, request entries length is {}.",
+                self.id,
+                self.log.len(),
+                id,
+                self.next_index[&id],request.entries.len()
+            );
+            if request.entries.len() > 0 {
                 self.next_index
                     .insert(id, request.entries.last().unwrap().index + 1);
                 self.match_index
                     .insert(id, request.entries.last().unwrap().index);
+                trace!(
+                "Node {}: node {} match index becomes {}, commit_index becomes {}, next_index becomes {}.",
+                self.id, id, self.match_index[&id], self.commit_index, self.next_index[&id]
+            );
+            } else {
+                self.next_index.insert(id, self.log.len() + 1);
+                self.match_index.insert(id, self.log.len());
             }
             let mut match_list = self.match_index.values().cloned().collect::<Vec<usize>>();
             match_list.sort();
+            trace!("Node {}: match list {:?}.", self.id, match_list);
             let most = match_list[self.node_list.len() / 2];
             self.commit_index = most;
-            debug!(
-                "Node {}: node {} match index becomes {}, commit_index becomes {}.",
-                self.id, id, self.match_index[&id], self.commit_index
+            trace!(
+                "Node {}: commit index becomes {}.",
+                self.id,
+                self.commit_index
             );
         } else {
+            debug!("Node {}: node {} refused AppendEntriesRPC.", self.id, id);
             let index = self.next_index[&id];
             self.next_index
                 .insert(id, if index >= 4 { index - 3 } else { 1 });
@@ -287,7 +334,7 @@ impl NodeCore {
                 entries: vec![],
             };
             let next_index = self.next_index[&node];
-            debug!("Node {} has logs with length {}.", self.id, self.log.len());
+            debug!("Node {}: has logs with length {}.", self.id, self.log.len());
             if self.log.len() > 0 {
                 if next_index >= 1 {
                     request.prev_log_index = next_index - 1;
@@ -299,6 +346,12 @@ impl NodeCore {
                     .entries
                     .extend_from_slice(&self.log[request.prev_log_index..]);
             }
+            trace!(
+                "Node {}: send to node {} AppendEntriesRPC with {:?}",
+                self.id,
+                node,
+                request
+            );
             list.push(Message::SendAppendEntriesRPC {
                 id: node.clone(),
                 request,
@@ -387,7 +440,10 @@ impl NodeCore {
     }
 
     fn convert_to_leader(&mut self) {
-        info!("Node {} converts to leader.", self.id);
+        info!(
+            "Node {} converts to leader of term {}.",
+            self.id, self.current_term
+        );
         self.state = RaftState::Leader;
         self.current_leader_id = Some(self.id);
         self.init_leader_state();
@@ -410,6 +466,10 @@ impl NodeCore {
     fn tick_election(&mut self) -> MsgList {
         self.heartbeat_elapsed += 1;
         if self.heartbeat_elapsed > self.election_elapsed {
+            debug!(
+                "Node {}: it has been a long time since last time received message from leader.",
+                self.id
+            );
             return self.convert_to_candidate();
         }
         vec![]
@@ -449,5 +509,9 @@ impl NodeCore {
 
     pub fn node_count(&self) -> usize {
         self.node_list.len()
+    }
+
+    pub fn log_history(&self) -> Vec<LogEntry> {
+        self.log[..self.commit_index].to_vec()
     }
 }
