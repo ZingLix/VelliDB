@@ -1,0 +1,14 @@
+[server]
+ip = "0.0.0.0"
+port = 38808
+
+[raft]
+[raft.1]
+ip = "127.0.0.1"
+port = 29901
+[raft.2]
+address = "127.0.0.1"
+port = 29902
+[raft.3]
+address = "127.0.0.1"
+port = 29903

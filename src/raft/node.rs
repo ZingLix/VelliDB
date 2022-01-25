@@ -16,13 +16,14 @@ use async_std::{
     channel::{bounded, unbounded, Receiver, Sender},
     task::block_on,
 };
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 use surf;
 use tide::{Request, Response, StatusCode};
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct NodeInfo {
     pub id: u64,
     pub address: String,
