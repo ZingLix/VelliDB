@@ -17,7 +17,7 @@ extern crate log;
 type NodeMap = HashMap<u64, RaftNodeHandle>;
 
 const BASIC_PORT: u32 = 38000;
-const PROXY_PORT_SPAN: u32 = 10000;
+const PROXY_PORT_SPAN: u32 = 5000;
 const PORT_SPAN_PER_TEST: u32 = 10;
 const ONE_LEADER_CHECK_MAX_RETRY_COUNT: u32 = 5;
 
