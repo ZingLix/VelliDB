@@ -1,0 +1,12 @@
+@host = http://127.0.0.1:38809
+
+###
+PUT {{host}}/key1
+
+val1
+
+###
+GET {{host}}/key1
+
+###
+DELETE  {{host}}/key1
