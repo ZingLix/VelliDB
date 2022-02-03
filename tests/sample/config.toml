@@ -1,0 +1,15 @@
+[server]
+address = "0.0.0.0:38808"
+store_path = "."
+
+[[raft_node]]
+id = 1
+address = "127.0.0.1:29901"
+
+[[raft_node]]
+id = 2
+address = "127.0.0.1:29902"
+
+[[raft_node]]
+id = 3
+address = "127.0.0.1:29903"

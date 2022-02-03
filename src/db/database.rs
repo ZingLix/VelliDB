@@ -1,18 +1,18 @@
 use async_std::channel::{self, Sender};
 use async_std::sync::Mutex;
 use bincode;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tide::{Request, Response};
 
-use super::config::VelliDBConfig;
+use super::config::{ServerConfig, VelliDBConfig};
 use super::options;
 use crate::raft::create_raft_node;
 use crate::raft::{RaftNode, RaftNodeHandle, RaftProposeResult};
-use crate::{LocalStorage, Result, VelliError, VelliErrorType};
+use crate::{LocalStorage, Result, VelliErrorType};
 
-#[derive(serde::Serialize)]
+#[derive(Serialize, Deserialize)]
 pub enum DBOperator {
     Put(Vec<u8>, Vec<u8>),
     Delete(Vec<u8>),
@@ -56,7 +56,7 @@ async fn get(req: Request<VelliDBHandle>) -> tide::Result<Response> {
 async fn propose(handle: &RaftNodeHandle, operate: DBOperator) -> tide::Result<Response> {
     match handle.propose(bincode::serialize(&operate).unwrap()).await {
         Ok(r) => match r {
-            RaftProposeResult::Success(l) => Ok(Response::builder(200).build()),
+            RaftProposeResult::Success(_) => Ok(Response::builder(200).build()),
             _ => Ok(Response::builder(400)
                 .body(r#"{"error": "true", "msg": "Propose failed, try again..."}"#)
                 .build()),
@@ -69,6 +69,7 @@ async fn propose(handle: &RaftNodeHandle, operate: DBOperator) -> tide::Result<R
 
 pub struct VelliDB {
     server: Option<tide::Server<VelliDBHandle>>,
+    config: ServerConfig,
     storage: Arc<Mutex<LocalStorage>>,
     raft_node: RaftNode,
     running: Option<Sender<()>>,
@@ -77,29 +78,39 @@ pub struct VelliDB {
 impl VelliDB {
     pub async fn new(mut config: VelliDBConfig) -> Result<VelliDB> {
         let mut path = PathBuf::new();
+        path.push(config.server.store_path.clone());
         path.push(options::STORAGE_BASE_PATH);
+        async_std::fs::create_dir_all(path.clone()).await?;
         let self_info_idx = config
-            .raft_node_list
+            .raft_node
             .iter()
-            .position(|x| x.id == config.raft_node_id);
+            .position(|x| x.id == config.raft_node_id.unwrap());
         let self_info;
         match self_info_idx {
             Some(idx) => {
-                self_info = config.raft_node_list.remove(idx);
+                self_info = config.raft_node.remove(idx);
             }
             None => {
-                panic!("Node {} not found in node list.", config.raft_node_id);
+                panic!(
+                    "Node {} not found in node list.",
+                    config.raft_node_id.unwrap()
+                );
             }
         }
-        let raft_node = create_raft_node(path.clone(), self_info, config.raft_node_list);
+        path.pop();
+        path.push(options::STORAGE_RAFT_FOLDER_NAME);
+        async_std::fs::create_dir_all(path.clone()).await?;
+        let raft_node = create_raft_node(path.clone(), self_info, config.raft_node);
         let raft_node = raft_node.start()?;
 
         path.pop();
         path.push(options::STORAGE_DB_FOLDER_NAME);
+        async_std::fs::create_dir_all(path.clone()).await?;
         let storage = Arc::new(Mutex::new(LocalStorage::new(path).await?));
 
         let mut db = VelliDB {
             server: None,
+            config: config.server,
             storage,
             raft_node,
             running: None,
@@ -113,7 +124,7 @@ impl VelliDB {
         Ok(db)
     }
 
-    pub async fn start(&mut self) -> Result<()> {
+    pub async fn start(mut self) -> Result<()> {
         match &self.running {
             Some(_) => {
                 warn!("The db has already been running!");
@@ -121,18 +132,32 @@ impl VelliDB {
             }
             None => {}
         }
+        let server_handle =
+            async_std::task::spawn(self.server.unwrap().listen(self.config.address));
         let (sender, receiver) = channel::bounded(1);
         self.running = Some(sender);
         loop {
             let l = self.raft_node.new_log().await?;
-            // TODO: deal log content
+            let operate: DBOperator = bincode::deserialize(&l.content.unwrap()).unwrap();
+            {
+                let mut storage = self.storage.lock().await;
+                match operate {
+                    DBOperator::Put(k, v) => {
+                        storage.set(k, v).await?;
+                    }
+                    DBOperator::Delete(k) => {
+                        storage.delete(k).await?;
+                    }
+                }
+            }
             match receiver.try_recv() {
                 Ok(_) => {
                     break;
                 }
-                Err(e) => {}
+                Err(_) => {}
             }
         }
+        server_handle.await?;
         Ok(())
     }
 
@@ -140,7 +165,7 @@ impl VelliDB {
         match &self.running {
             Some(sx) => {
                 info!("The db is told to stop.");
-                sx.send(());
+                sx.send(()).await?;
                 Ok(())
             }
             None => {
